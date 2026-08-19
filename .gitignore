@@ -1,0 +1,25 @@
+# Python environment / build artifacts
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+
+# Local personal data -- never published. See core/paths.py: in dev mode
+# these resolve right here at the repo root (unchanged behavior), which is
+# exactly why they need to be gitignored rather than just "not committed
+# this once."
+.session_snapshot.enc
+.engagement_log.json
+.passive_tracking_log.json
+.notion_web_profile/
+
+# Personal voice-cloning reference clips (see services/xtts_voice.py) --
+# keep the folder in git (so AI/Voices/ exists for a fresh clone to drop
+# files into) but never the user's own recorded audio.
+AI/Voices/*
+!AI/Voices/.gitkeep
+
+# Claude Code / local tooling config -- not part of the app itself.
+.claude/
+.impeccable/

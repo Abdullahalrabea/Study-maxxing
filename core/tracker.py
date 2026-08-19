@@ -1,0 +1,1 @@
+#calculates slides and distractions and adds to the progress bar
