@@ -1,14 +1,18 @@
-# Study Warden
+# Study Maxxing
 
-<!-- TODO: drop a banner image at docs/assets/banner.png and uncomment:
-![Study Warden banner](docs/assets/banner.png)
--->
+![Study Maxxing banner](docs/assets/banner.gif)
 
 A desktop study-accountability app for Windows: webcam-monitored focus
 sessions, an AI study planner and voice assistant running entirely on a
 local LLM, deep Notion integration, and a small library of break-time
 mini-games — built around one real workflow, shared here for anyone
 curious enough to try it or adapt it.
+
+Inside the app, the schedule- and lockdown-facing half of this — the
+Notion scheduling agent, the full-screen focus session, and the debt/
+accountability system underneath it — goes by its own name, **Study
+Warden**. You'll see that name in window titles and a few in-app labels;
+it's the same app, just a named subsystem rather than a separate product.
 
 ## What this actually is
 

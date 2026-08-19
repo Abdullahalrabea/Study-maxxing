@@ -1157,7 +1157,7 @@ def _missing_config_notice(text):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Study Warden")
+        self.setWindowTitle("Study Maxxing")
         self.resize(1400, 800)
 
         self._app_settings = QSettings(SETTINGS_ORG, SETTINGS_APP)

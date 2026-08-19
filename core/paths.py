@@ -34,3 +34,22 @@ def get_app_data_dir():
         app_dir = Path(__file__).resolve().parent.parent
     app_dir.mkdir(parents=True, exist_ok=True)
     return app_dir
+
+
+def get_resource_dir(relative_path):
+    """Read-only bundled resources (images, cursors, vision models) --
+    distinct from get_app_data_dir() above, which is for writable data.
+
+    In dev, this is the repo root joined with `relative_path` (e.g.
+    "ui/Images"), same as today's `Path(__file__).resolve().parent /
+    "Images"`-style lookups. Once packaged, PyInstaller's bootloader
+    extracts/stages bundled files under `sys._MEIPASS` and it's the only
+    reliable source for that location -- unlike get_app_data_dir(), this
+    directory is never written to, so there's no update-wipe concern and
+    no need to route it through %LOCALAPPDATA%.
+    """
+    if getattr(sys, "frozen", False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).resolve().parent.parent
+    return base / relative_path

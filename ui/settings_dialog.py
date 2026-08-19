@@ -261,7 +261,7 @@ class SettingsDialog(QDialog):
         group = QGroupBox("Notion")
         layout = QFormLayout(group)
 
-        note = QLabel("Saved here, but only take effect the next time Study Warden starts.")
+        note = QLabel("Saved here, but only take effect the next time Study Maxxing starts.")
         note.setWordWrap(True)
         layout.addRow(note)
 
@@ -321,7 +321,7 @@ class SettingsDialog(QDialog):
         self.notion_todo_edit.clear()
         self.notion_calendar_edit.clear()
         self.notion_embed_edit.clear()
-        self.notion_status_label.setText("Cleared -- restart Study Warden for this to take effect.")
+        self.notion_status_label.setText("Cleared -- restart Study Maxxing for this to take effect.")
 
     def _on_notion_save_clicked(self):
         self._settings.setValue(KEY_NOTION_TOKEN, self.notion_token_edit.text().strip())
@@ -329,7 +329,7 @@ class SettingsDialog(QDialog):
         self._settings.setValue(KEY_NOTION_TODO_PAGE_ID, self.notion_todo_edit.text().strip())
         self._settings.setValue(KEY_NOTION_CALENDAR_DATABASE_ID, self.notion_calendar_edit.text().strip())
         self._settings.setValue(KEY_NOTION_EMBED_URL, self.notion_embed_edit.text().strip())
-        self.notion_status_label.setText("Saved -- restart Study Warden for this to take effect.")
+        self.notion_status_label.setText("Saved -- restart Study Maxxing for this to take effect.")
 
     # ---- clear Notion data (table/calendar/to-do -- NOT the same as "Reset
     # Notion settings" above, which only clears saved connection fields) ----
@@ -412,7 +412,7 @@ class SettingsDialog(QDialog):
         note = QLabel(
             "The local server URL LM Studio exposes once you've loaded a model and clicked "
             "\"Start Server\" in the Developer tab. Saved here, but only takes effect the next "
-            "time Study Warden starts."
+            "time Study Maxxing starts."
         )
         note.setWordWrap(True)
         layout.addRow(note)
@@ -442,7 +442,7 @@ class SettingsDialog(QDialog):
 
     def _on_lm_studio_save_clicked(self):
         self._settings.setValue(KEY_LM_STUDIO_URL, self.lm_studio_url_edit.text().strip())
-        self.lm_studio_status_label.setText("Saved -- restart Study Warden for this to take effect.")
+        self.lm_studio_status_label.setText("Saved -- restart Study Maxxing for this to take effect.")
 
     def _on_lm_studio_test_clicked(self):
         if self._lm_test_worker is not None and self._lm_test_worker.isRunning():

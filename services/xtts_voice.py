@@ -20,13 +20,20 @@
 # per utterance -- the load itself is the slow part.
 
 import os
-from pathlib import Path
 
 from PyQt6.QtCore import QSettings, QThread, pyqtSignal
 
+from paths import get_app_data_dir
+
 os.environ.setdefault("COQUI_TOS_AGREED", "1")
 
-VOICES_DIR = Path(__file__).resolve().parent.parent / "AI" / "Voices"
+# get_app_data_dir(), not get_resource_dir() -- these are reference clips
+# the USER drops in after install (not something the app ships), so this
+# has to be the same writable, update-survives-it location as the other
+# per-user files in core/paths.py, or a self-update's directory swap would
+# silently delete them. In dev this still resolves to today's exact path
+# (repo_root/AI/Voices), unchanged.
+VOICES_DIR = get_app_data_dir() / "AI" / "Voices"
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".flac", ".ogg", ".m4a")
 

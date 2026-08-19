@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 build/
 dist/
+.build_temp/
+pyinstaller_build.log
 
 # Local personal data -- never published. See core/paths.py: in dev mode
 # these resolve right here at the repo root (unchanged behavior), which is

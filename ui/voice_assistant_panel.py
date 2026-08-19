@@ -46,8 +46,6 @@
 # instant like SAPI5: expect a real multi-second delay before playback
 # starts.
 
-from pathlib import Path
-
 from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QMovie
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QProgressBar
@@ -56,8 +54,9 @@ import audio_devices
 import lockdown_os
 import xtts_voice
 import theme
+from paths import get_resource_dir
 
-IMAGES_DIR = Path(__file__).resolve().parent / "Images"
+IMAGES_DIR = get_resource_dir("ui/Images")
 IDLE_IMAGE = IMAGES_DIR / "catnuetral.jpg"
 LISTEN_IMAGE = IMAGES_DIR / "catlisten.jpg"
 THINK_IMAGE = IMAGES_DIR / "hmm-cat-thinking.jpg"
@@ -165,8 +164,18 @@ class _TTSThread(QThread):
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(self.text)
+            if getattr(sys, "frozen", False):
+                # Packaged StudyWarden.exe isn't a Python interpreter, so
+                # "-c <script>" (which relies on running against a real
+                # python.exe) doesn't apply -- instead re-launch the same
+                # frozen exe with a worker-mode flag main.py checks for
+                # before doing anything else (see main.py's top-of-file
+                # branch), landing in the same isolated-process TTS call.
+                args = [sys.executable, "--tts-worker", path]
+            else:
+                args = [sys.executable, "-c", self._SPEAK_SCRIPT, path]
             self._process = subprocess.Popen(
-                [sys.executable, "-c", self._SPEAK_SCRIPT, path],
+                args,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self._process.wait()

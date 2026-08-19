@@ -12,7 +12,6 @@
 
 import io
 from datetime import datetime
-from pathlib import Path
 
 from PIL import Image
 from PyQt6.QtCore import Qt, QEvent, QTimer, QObject, pyqtSignal, QSettings, QPropertyAnimation, QEasingCurve
@@ -22,13 +21,15 @@ from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QFrame
 )
 
-CURSOR_DIR = Path(__file__).resolve().parent / "cursor"
+from paths import get_resource_dir
+
+CURSOR_DIR = get_resource_dir("ui/cursor")
 POINTER_CURSOR_PATH = CURSOR_DIR / "Wii Cursor.cur"  # the actual file on disk -- this constant previously
                                                        # pointed at a name ("wii-pointer.cur") that never
                                                        # existed, so load_pointer_cursor() silently returned
                                                        # None every time and the app always fell back to the
                                                        # system default cursor
-APP_ICON_PATH = Path(__file__).resolve().parent / "App Icon" / "Pepopolice.jpg"
+APP_ICON_PATH = get_resource_dir("ui/App Icon") / "Pepopolice.jpg"
 
 # Falls back to a system monospace font if Roboto Mono isn't installed --
 # Qt silently substitutes rather than erroring, so this is safe either way.

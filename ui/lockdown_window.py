@@ -21,7 +21,6 @@
 
 import time
 from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 import fitz  # PyMuPDF
@@ -38,6 +37,7 @@ from attention_video import AttentionVideoPlayer
 from voice_assistant_panel import VoiceAssistantPanel
 from spotify_widget import SpotifyNowPlayingWidget
 from llm_client import LLMClient
+from paths import get_resource_dir
 
 WEBCAM_LABEL_SIZE = (320, 240)
 POSE_LABEL_SIZE = (280, 220)  # sized to sit prominently next to the webcam, matching the user's own wireframe
@@ -60,7 +60,7 @@ CREDIT_MULTIPLIERS = {"full": 1.0, "reduced": 0.5, "none": 0.0}  # how much of a
                                                                   # time actually counts toward the pacing
                                                                   # bar's progress
 
-HEART_IMAGE_PATH = Path(__file__).resolve().parent / "Images" / "minecraft-heart.png"
+HEART_IMAGE_PATH = get_resource_dir("ui/Images") / "minecraft-heart.png"
 HEART_SIZE = 32           # each heart's rendered width/height, px
 HEART_SPACING = 4         # gap between hearts, px
 HEART_COUNT = 10          # 10 hearts * 2 half-steps each = 20 steps, 5% granularity -- same convention as a

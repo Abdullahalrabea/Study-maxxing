@@ -1,5 +1,21 @@
-# Boots up the full application; will boot when Notion auto-launches Study Warden
+# Boots up the full application; will boot when Notion auto-launches Study Maxxing
 import sys
+
+# Packaged builds have no separate python.exe to shell out to, so
+# ui/voice_assistant_panel.py's _TTSThread re-launches THIS frozen exe with
+# this flag instead of "python -c <script>" (which only works against a real
+# interpreter) to get pyttsx3's isolated-process speech call. Checked before
+# any other import so a worker invocation stays fast and never touches the
+# GUI stack (PyQt6, torch/xtts_voice, vision models, etc).
+if len(sys.argv) >= 3 and sys.argv[1] == "--tts-worker":
+    import pyttsx3
+    with open(sys.argv[2], "r", encoding="utf-8") as f:
+        text = f.read()
+    engine = pyttsx3.init()
+    engine.say(text)
+    engine.runAndWait()
+    sys.exit(0)
+
 from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication

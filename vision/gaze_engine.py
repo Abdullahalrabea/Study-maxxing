@@ -40,7 +40,6 @@
 # you want a different number of push-ups).
 
 import time
-from pathlib import Path
 
 import cv2
 import numpy as np
@@ -61,8 +60,9 @@ from phone_detector import PhoneDetector, PHONE_LIKE_LABELS, PHONE_SCORE_THRESHO
 from pushup_counter import PushupCounter, TPOSE_HOLD_SEC
 from eye_tracker import get_gaze_direction
 from expression_classifier import classify_expression
+from paths import get_resource_dir
 
-SCRIPT_DIR = Path(__file__).parent
+SCRIPT_DIR = get_resource_dir("vision")
 MODEL_PATH = SCRIPT_DIR / "face_landmarker.task"
 HAND_MODEL_PATH = SCRIPT_DIR / "hand_landmarker.task"
 PHONE_MODEL_PATH = SCRIPT_DIR / "efficientdet_lite0.tflite"

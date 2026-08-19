@@ -12,7 +12,7 @@ The developer themselves: a computer science student (current courses include CS
 
 ## Product Purpose
 
-Study Warden is a personal, locally-run study-accountability system combining a Pomodoro-style focus timer, webcam-based distraction monitoring, an AI chat agent with full read/write access to the user's real Notion workspace, and an AI Study Planner that generates day-by-day study/work calendars -- culminating in "Monitor Lockdown," a full-screen enforced study environment. It exists to solve the user's own difficulty staying on-task and organized across several concurrent courses, deadlines, and study materials. Success means: distraction genuinely caught and interrupted during a session, calendars that realistically account for competing deadlines instead of cramming, and Notion staying in sync without manual data entry.
+Study Maxxing is a personal, locally-run study-accountability system combining a Pomodoro-style focus timer, webcam-based distraction monitoring, an AI chat agent with full read/write access to the user's real Notion workspace, and an AI Study Planner that generates day-by-day study/work calendars -- culminating in "Monitor Lockdown," a full-screen enforced study environment. It exists to solve the user's own difficulty staying on-task and organized across several concurrent courses, deadlines, and study materials. Success means: distraction genuinely caught and interrupted during a session, calendars that realistically account for competing deadlines instead of cramming, and Notion staying in sync without manual data entry.
 
 ## Positioning
 
@@ -44,10 +44,10 @@ What a plain Pomodoro timer, a plain Notion integration, or a plain to-do app co
 
 ## Brand Commitments
 
-- App name: "Study Warden."
+- App name: "Study Maxxing." The schedule- and lockdown-facing subsystem specifically (the Notion scheduling agent, the full-screen focus session, the debt/accountability ledger) goes by its own name, "Study Warden," in window titles and a few in-app labels -- a named subsystem within Study Maxxing, not a separate product.
 - App icon: a custom user-provided image (`ui/App Icon/Pepopolice.jpg`, a Pepe-the-frog-as-police-officer graphic) -- an intentionally informal, personal choice, not a corporate mark.
 - Default visual identity: a retro terminal look (green on black, monospace type intended to be Roboto Mono, falling back to Consolas), alongside several palette-driven alternate themes (Molten Fire, Ocean Twilight, Forest Sage, Blossom, Royal Violet) and a plain light theme, switchable live from Settings.
-- Custom cursor: a Wii-style pointer graphic (`ui/cursor/wii-pointer.cur`).
+- Custom cursor: a Wii-style pointer graphic (`ui/cursor/Wii Cursor.cur`).
 
 ## Evidence on Hand
 
