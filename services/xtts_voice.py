@@ -82,6 +82,8 @@ class XTTSEngine:
     @classmethod
     def _get_tts(cls):
         if cls._tts is None:
+            import torch_runtime
+            torch_runtime.activate()
             import torch
             from TTS.api import TTS
             device = "cuda" if torch.cuda.is_available() else "cpu"

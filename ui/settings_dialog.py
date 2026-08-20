@@ -13,7 +13,7 @@ import re
 
 from PyQt6.QtCore import QSettings, QDate, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QDateEdit, QRadioButton, QButtonGroup, QScrollArea, QWidget, QMessageBox,
     QComboBox, QProgressBar
 )
@@ -23,6 +23,9 @@ import session_snapshot
 import audio_devices
 import xtts_voice
 from llm_client import LLMClient, LM_STUDIO_BASE_URL as DEFAULT_LM_STUDIO_URL
+from paths import get_current_version
+from update_checker import UpdateCheckWorker, UpdateApplyWorker
+import torch_runtime
 
 MIC_TEST_DURATION_MS = 3000
 
@@ -125,6 +128,10 @@ class SettingsDialog(QDialog):
         self._mic_test_worker = None
         self._mic_test_peak = 0.0
         self._voice_preview_worker = None
+        self._update_check_worker = None
+        self._update_apply_worker = None
+        self._available_update_asset = None
+        self._torch_download_worker = None
         self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
         outer = QVBoxLayout(self)
@@ -146,6 +153,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._build_voice_group())
         layout.addWidget(self._build_attention_video_group())
         layout.addWidget(self._build_debt_group())
+        layout.addWidget(self._build_updates_group())
         layout.addStretch()
 
         close_row = QHBoxLayout()
@@ -597,6 +605,15 @@ class SettingsDialog(QDialog):
         self.voice_status_label.setWordWrap(True)
         layout.addWidget(self.voice_status_label)
 
+        # Only relevant in a packaged build -- torch/torchaudio's CUDA
+        # runtime is excluded from the bundle (see studywarden.spec and
+        # services/torch_runtime.py) because it alone is ~4.3GB, well
+        # over GitHub's 2GB release-asset limit. First time a cloned
+        # voice is actually needed, this downloads it (~2.5GB, one-time).
+        self.torch_download_progress = QProgressBar()
+        self.torch_download_progress.setVisible(False)
+        layout.addWidget(self.torch_download_progress)
+
         if not self._voices:
             empty_note = QLabel("No voice clips found in AI/Voices/ -- only the default voice is available.")
             empty_note.setWordWrap(True)
@@ -606,8 +623,21 @@ class SettingsDialog(QDialog):
 
     def _on_voice_changed(self, index):
         name = self.voice_combo.currentData()  # None for Default, else the voice name string
-        xtts_voice.save_voice_name(name)
-        self.voice_status_label.setText(f"Now using: {name}" if name else "Using the default Windows voice.")
+
+        def apply():
+            xtts_voice.save_voice_name(name)
+            self.voice_status_label.setText(f"Now using: {name}" if name else "Using the default Windows voice.")
+
+        def revert():
+            self.voice_combo.blockSignals(True)
+            self.voice_combo.setCurrentIndex(0)
+            self.voice_combo.blockSignals(False)
+            self.voice_status_label.setText("Using the default Windows voice.")
+
+        if name is None:
+            apply()
+            return
+        self._ensure_torch_then(apply, on_declined_or_failed=revert)
 
     def _on_voice_preview_clicked(self):
         name = self.voice_combo.currentData()
@@ -618,6 +648,9 @@ class SettingsDialog(QDialog):
         if path is None:
             self.voice_status_label.setText("Couldn't find that voice's reference clip.")
             return
+        self._ensure_torch_then(lambda: self._run_voice_preview(path))
+
+    def _run_voice_preview(self, path):
         self.voice_preview_button.setEnabled(False)
         self.voice_status_label.setText(
             "Generating preview... this can take a while the first time (downloads the model)."
@@ -631,6 +664,60 @@ class SettingsDialog(QDialog):
     def _on_voice_preview_done(self):
         self.voice_preview_button.setEnabled(True)
         self.voice_status_label.setText("Preview finished.")
+
+    def _ensure_torch_then(self, on_ready, on_declined_or_failed=None):
+        """Runs `on_ready()` immediately if torch is already available
+        (always true in dev; true in a packaged build once the one-time
+        download below has completed). Otherwise confirms with the user,
+        downloads+extracts it with a real progress bar, and only then
+        calls `on_ready()` -- or `on_declined_or_failed()` if they say no
+        or the download fails, so callers (voice selection, preview) can
+        cleanly undo whatever they were about to do."""
+        if torch_runtime.is_available():
+            on_ready()
+            return
+
+        confirmed = QMessageBox.question(
+            self, "Download voice cloning support",
+            "Voice cloning needs a one-time ~2.5GB download (PyTorch's CUDA runtime) that isn't "
+            "bundled with the app, to keep the download size reasonable. This only happens once -- "
+            "after this, cloned voices work normally. Download now?",
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            if on_declined_or_failed:
+                on_declined_or_failed()
+            return
+
+        self.voice_combo.setEnabled(False)
+        self.voice_preview_button.setEnabled(False)
+        self.torch_download_progress.setVisible(True)
+        self.torch_download_progress.setValue(0)
+        self._torch_download_worker = torch_runtime.TorchDownloadWorker()
+        self._torch_download_worker.progress.connect(self._on_torch_download_progress)
+        self._torch_download_worker.done.connect(lambda: self._on_torch_download_done(on_ready))
+        self._torch_download_worker.failed.connect(
+            lambda msg: self._on_torch_download_failed(msg, on_declined_or_failed)
+        )
+        self._torch_download_worker.start()
+
+    def _on_torch_download_progress(self, stage, fraction):
+        self.voice_status_label.setText(stage)
+        self.torch_download_progress.setValue(int(fraction * 100))
+
+    def _on_torch_download_done(self, on_ready):
+        self.voice_combo.setEnabled(True)
+        self.voice_preview_button.setEnabled(True)
+        self.torch_download_progress.setVisible(False)
+        self.voice_status_label.setText("Voice cloning support installed.")
+        on_ready()
+
+    def _on_torch_download_failed(self, message, on_declined_or_failed):
+        self.voice_combo.setEnabled(True)
+        self.voice_preview_button.setEnabled(True)
+        self.torch_download_progress.setVisible(False)
+        self.voice_status_label.setText(f"Couldn't set up voice cloning: {message}")
+        if on_declined_or_failed:
+            on_declined_or_failed()
         self._voice_preview_worker = None
 
     # ---- attention video (see ui/attention_video.py -- the small corner
@@ -773,3 +860,84 @@ class SettingsDialog(QDialog):
             session_snapshot.clear_debt(entry["course"], entry["field"])
         session_snapshot.clear_penalty()
         self._refresh_debt_list()
+
+    # ---- updates (see services/update_checker.py) ----
+
+    def _build_updates_group(self):
+        group = QGroupBox("Updates")
+        layout = QVBoxLayout(group)
+
+        self.update_version_label = QLabel(f"Current version: v{get_current_version()}")
+        layout.addWidget(self.update_version_label)
+
+        button_row = QHBoxLayout()
+        self.check_update_button = QPushButton("Check for Updates")
+        self.check_update_button.clicked.connect(self._on_check_update_clicked)
+        button_row.addWidget(self.check_update_button)
+
+        # Hidden until a real update is actually found -- only ever shown
+        # right after a "you're already up to date" state would be wrong.
+        self.download_update_button = QPushButton("Download && Install")
+        self.download_update_button.clicked.connect(self._on_download_update_clicked)
+        self.download_update_button.setVisible(False)
+        button_row.addWidget(self.download_update_button)
+        layout.addLayout(button_row)
+
+        self.update_status_label = QLabel("")
+        self.update_status_label.setWordWrap(True)
+        layout.addWidget(self.update_status_label)
+
+        return group
+
+    def _on_check_update_clicked(self):
+        if self._update_check_worker is not None and self._update_check_worker.isRunning():
+            return
+        self.check_update_button.setEnabled(False)
+        self.download_update_button.setVisible(False)
+        self._available_update_asset = None
+        self.update_status_label.setText("Checking for updates...")
+        self._update_check_worker = UpdateCheckWorker()
+        self._update_check_worker.done.connect(self._on_check_update_done)
+        self._update_check_worker.start()
+
+    def _on_check_update_done(self, update_available, latest_version, message, asset):
+        self.check_update_button.setEnabled(True)
+        self.update_status_label.setText(message)
+        if update_available:
+            self._available_update_asset = asset
+            self.download_update_button.setVisible(True)
+
+    def _on_download_update_clicked(self):
+        if self._available_update_asset is None:
+            return
+        if self._update_apply_worker is not None and self._update_apply_worker.isRunning():
+            return
+
+        confirmed = QMessageBox.question(
+            self, "Download && Install Update",
+            "This downloads the update, then closes and restarts Study Maxxing to finish "
+            "installing it. Your saved settings, debt ledger, and Notion connection are stored "
+            "outside the install folder and won't be affected.\n\nContinue?",
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        self.check_update_button.setEnabled(False)
+        self.download_update_button.setEnabled(False)
+        self._update_apply_worker = UpdateApplyWorker(self._available_update_asset)
+        self._update_apply_worker.progress.connect(self.update_status_label.setText)
+        self._update_apply_worker.done.connect(self._on_update_apply_done)
+        self._update_apply_worker.failed.connect(self._on_update_apply_failed)
+        self._update_apply_worker.start()
+
+    def _on_update_apply_done(self):
+        # The generated PowerShell script is already waiting on this
+        # process's PID to exit -- quitting now is what lets it proceed,
+        # not an afterthought. QApplication.quit(), not self.close():
+        # this needs to end the whole app, not just the Settings dialog.
+        QApplication.instance().quit()
+
+    def _on_update_apply_failed(self, message):
+        self.check_update_button.setEnabled(True)
+        self.download_update_button.setEnabled(True)
+        self.update_status_label.setText(f"Update failed: {message}")

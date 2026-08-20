@@ -53,3 +53,10 @@ def get_resource_dir(relative_path):
     else:
         base = Path(__file__).resolve().parent.parent
     return base / relative_path
+
+
+def get_current_version():
+    """The app's own version string (e.g. "0.1.0"), read from the bundled
+    VERSION file -- see services/update_checker.py, which compares this
+    against the latest GitHub release tag."""
+    return get_resource_dir("VERSION").read_text(encoding="utf-8").strip()

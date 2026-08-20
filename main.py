@@ -1,5 +1,12 @@
 # Boots up the full application; will boot when Notion auto-launches Study Maxxing
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+# Every module below uses flat (non-package) imports among its own siblings,
+# so each folder needs to be importable on its own rather than as a package.
+for folder in ("core", "ui", "ui/games", "services", "AI", "vision"):
+    sys.path.insert(0, str(ROOT / folder))
 
 # Packaged builds have no separate python.exe to shell out to, so
 # ui/voice_assistant_panel.py's _TTSThread re-launches THIS frozen exe with
@@ -16,15 +23,7 @@ if len(sys.argv) >= 3 and sys.argv[1] == "--tts-worker":
     engine.runAndWait()
     sys.exit(0)
 
-from pathlib import Path
-
 from PyQt6.QtWidgets import QApplication
-
-ROOT = Path(__file__).resolve().parent
-# Every module below uses flat (non-package) imports among its own siblings,
-# so each folder needs to be importable on its own rather than as a package.
-for folder in ("core", "ui", "ui/games", "services", "AI", "vision"):
-    sys.path.insert(0, str(ROOT / folder))
 
 from main_window import MainWindow  # noqa: E402
 import theme  # noqa: E402
