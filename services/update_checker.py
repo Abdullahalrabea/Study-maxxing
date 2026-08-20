@@ -1,22 +1,19 @@
 # In-app self-update: checks the latest GitHub Release, downloads the
-# published onedir build, and swaps it into place via a small generated
-# PowerShell script (see UpdateApplyWorker._write_swap_script()) -- a
-# near-atomic pair of directory renames, run detached AFTER this process
-# has already quit, since Windows won't let a running exe's own
-# directory be replaced out from under it.
+# published installer, and re-runs it silently -- Inno Setup's own
+# Restart Manager integration (CloseApplications/RestartApplications in
+# installer.iss) detects that StudyWarden.exe is running, closes it,
+# installs over it, and relaunches it. No custom directory-swap
+# scripting needed the way updating a plain zip release would require;
+# the installer already knows how to replace a running install of
+# itself, since that's exactly what upgrade-over-existing-install means.
 #
 # Repo is public, so every request here is unauthenticated -- GitHub
 # requires a real User-Agent header on API requests or it 403s.
 
 import json
-import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
-import zipfile
-from pathlib import Path
 
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -30,9 +27,8 @@ REQUEST_TIMEOUT_SEC = 15
 DOWNLOAD_TIMEOUT_SEC = 300
 USER_AGENT = "StudyMaxxing-UpdateChecker"
 
-# Matches the asset name Phase E's release process attaches, e.g.
-# "StudyWarden-v0.1.0-win64.zip" -- see the plan's Phase E notes.
-ASSET_NAME_PATTERN = re.compile(r"^StudyWarden-v[\d.]+-win64\.zip$")
+# Matches installer.iss's OutputBaseFilename, e.g. "StudyWarden-Setup-v0.1.0.exe".
+ASSET_NAME_PATTERN = re.compile(r"^StudyWarden-Setup-v[\d.]+\.exe$")
 
 
 def _parse_version(text):
@@ -94,16 +90,14 @@ class UpdateCheckWorker(QThread):
 
 
 class UpdateApplyWorker(QThread):
-    """Downloads the release zip, verifies it, extracts it to a sibling
-    staging folder, and hands off to a generated PowerShell script that
-    does the actual directory swap -- all of which has to happen from a
-    SEPARATE process that outlives this one, since Windows won't let a
-    running exe's own directory be replaced while it's still running.
-    This worker's job ends at "script launched"; `done` means "about to
-    quit", not "update finished" -- see _write_swap_script()'s docstring
-    for the rest of the story.
+    """Downloads the release installer and launches it silently, detached
+    from this process. This worker's job ends at "installer launched";
+    `done` means "about to quit", not "update finished" -- the installer
+    itself (running as a separate process) is what actually waits for
+    this app to exit, overwrites the install directory, and relaunches
+    it, via Inno Setup's Restart Manager integration (see installer.iss).
     progress: (stage) -- short human-readable status text
-    done: () -- staging + script launch succeeded, caller should quit now
+    done: () -- installer launched successfully, caller should quit now
     failed: (message)"""
     progress = pyqtSignal(str)
     done = pyqtSignal()
@@ -121,29 +115,25 @@ class UpdateApplyWorker(QThread):
         try:
             updates_dir = get_app_data_dir() / "updates"
             updates_dir.mkdir(parents=True, exist_ok=True)
-            zip_path = updates_dir / self.asset["name"]
+            installer_path = updates_dir / self.asset["name"]
 
             self.progress.emit("Downloading...")
-            self._download(self.asset["browser_download_url"], zip_path, self.asset["size"])
+            self._download(self.asset["browser_download_url"], installer_path, self.asset["size"])
 
-            install_dir = Path(sys.executable).resolve().parent
-            staging_dir = install_dir.parent / (install_dir.name + ".new")
-            if staging_dir.exists():
-                shutil.rmtree(staging_dir)
-
-            self.progress.emit("Extracting...")
-            self._extract(zip_path, staging_dir)
-
-            if not (staging_dir / "StudyWarden.exe").exists() or not (staging_dir / "VERSION").exists():
-                raise RuntimeError("Downloaded update is missing StudyWarden.exe or VERSION -- not applying it.")
-
-            self.progress.emit("Preparing to restart...")
-            script_path = self._write_swap_script(install_dir, staging_dir)
+            self.progress.emit("Launching installer...")
+            # /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS make the automatic
+            # close-then-relaunch behavior explicit for a silent run (it's
+            # already the [Setup]-section default, see installer.iss, but
+            # naming it here removes any doubt this is the mechanism doing
+            # the work, not something relying on default flag values).
             subprocess.Popen(
-                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                [
+                    str(installer_path),
+                    "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                    "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS",
+                ],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
-            zip_path.unlink(missing_ok=True)
             self.done.emit()
         except Exception as e:
             self.failed.emit(str(e))
@@ -158,67 +148,3 @@ class UpdateApplyWorker(QThread):
         if actual_size != expected_size:
             dest_path.unlink(missing_ok=True)
             raise RuntimeError(f"Download incomplete: got {actual_size} bytes, expected {expected_size}.")
-
-    def _extract(self, zip_path, staging_dir):
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(staging_dir.parent)
-        # The release zip contains a single top-level "StudyWarden/" folder
-        # (Phase E zips dist/StudyWarden as-is) -- rename that extracted
-        # folder to our staging name rather than assuming it already
-        # matches (it won't, the first time: "StudyWarden" != "StudyWarden.new").
-        extracted = staging_dir.parent / "StudyWarden"
-        if extracted != staging_dir:
-            if staging_dir.exists():
-                shutil.rmtree(staging_dir)
-            extracted.rename(staging_dir)
-
-    def _write_swap_script(self, install_dir, staging_dir):
-        """Waits for this process to exit, then does two directory renames
-        (old install -> .old, staging -> live) -- near-atomic, so there's
-        never a moment where the install directory is half-old/half-new.
-        Rolls back (renames .old back) if the swap fails partway, rather
-        than leaving a broken/missing install. Relaunches the new exe and
-        cleans up the .old copy once done. Every step logs to
-        update_log.txt (in get_app_data_dir(), so it survives the swap
-        it's describing) for troubleshooting."""
-        pid = os.getpid()
-        old_dir = install_dir.parent / (install_dir.name + ".old")
-        log_path = get_app_data_dir() / "update_log.txt"
-        exe_name = "StudyWarden.exe"
-
-        script = f'''$ErrorActionPreference = "Stop"
-$logPath = "{log_path}"
-function Log($msg) {{ Add-Content -Path $logPath -Value "$(Get-Date -Format o)  $msg" }}
-
-Log "Waiting for PID {pid} to exit..."
-try {{ Wait-Process -Id {pid} -Timeout 30 -ErrorAction SilentlyContinue }} catch {{}}
-Start-Sleep -Seconds 1
-
-$installDir = "{install_dir}"
-$stagingDir = "{staging_dir}"
-$oldDir = "{old_dir}"
-
-try {{
-    if (Test-Path $oldDir) {{ Remove-Item -Recurse -Force $oldDir }}
-    Log "Renaming $installDir -> $oldDir"
-    Rename-Item -Path $installDir -NewName (Split-Path $oldDir -Leaf)
-    Log "Renaming $stagingDir -> $installDir"
-    Rename-Item -Path $stagingDir -NewName (Split-Path $installDir -Leaf)
-    Log "Swap succeeded, relaunching"
-    Start-Process -FilePath (Join-Path $installDir "{exe_name}")
-    Start-Sleep -Seconds 2
-    Remove-Item -Recurse -Force $oldDir -ErrorAction SilentlyContinue
-    Log "Cleanup done."
-}} catch {{
-    Log "Swap FAILED: $_"
-    if ((Test-Path $oldDir) -and -not (Test-Path $installDir)) {{
-        Log "Rolling back: $oldDir -> $installDir"
-        Rename-Item -Path $oldDir -NewName (Split-Path $installDir -Leaf)
-        Start-Process -FilePath (Join-Path $installDir "{exe_name}")
-    }}
-}}
-'''
-        fd, path = tempfile.mkstemp(suffix=".ps1", prefix="studywarden_update_")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(script)
-        return Path(path)

@@ -6,6 +6,8 @@ build/
 dist/
 .build_temp/
 pyinstaller_build.log
+installer_output/
+installer_build.log
 
 # Local personal data -- never published. See core/paths.py: in dev mode
 # these resolve right here at the repo root (unchanged behavior), which is
