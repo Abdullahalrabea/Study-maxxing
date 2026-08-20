@@ -67,7 +67,14 @@ class UpdateCheckWorker(QThread):
             self.done.emit(False, current, f"Unexpected response from GitHub: {e}", None)
             return
 
-        latest = release.get("tag_name", "")
+        # Strip any leading "v"/"V" right here so `latest` is always a bare
+        # version number from this point on, same as `current` (from
+        # get_current_version(), which never has one) -- the git tag
+        # itself is "v0.1.0", and every message below adds its own "v"
+        # prefix when displaying either one; without stripping it first,
+        # tag-derived messages read as "vv0.1.0" (confirmed the hard way
+        # in a real self-update test, not a hypothetical).
+        latest = release.get("tag_name", "").strip().lstrip("vV")
         try:
             is_newer = _parse_version(latest) > _parse_version(current)
         except ValueError:
