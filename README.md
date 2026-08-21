@@ -15,7 +15,7 @@ It also helps determine how much time I should spend studying for each course, m
 There is also a **Lockdown Mode** that automatically minimizes any open windows and only displays the slides for the course I'm studying;
 It is further reinforced by webcam monitoring to help keep me focused and prevent distractions.
 
-<!-- TODO: docs/assets/screenshots/homepage.png -->
+![Homepage](docs/assets/screenshots/homepage.png)
 
 ## Features
 
@@ -33,21 +33,21 @@ a property of whatever you point LM Studio at.
 - **Full-screen enforced study view** — once the webcam/AI models finish
   loading, today's study material fills the screen with a live webcam
   feed and the timer docked in the header.
-- **Soft, always-escapable enforcement** — other windows get minimized
+- **Soft-lockdown, always-escapable enforcement** — other windows get minimized
   (not blocked), and Esc / an Exit button / Ctrl+Shift+Alt always work,
   by deliberate design — never a hard lock that could trap you.
 - **Webcam-based distraction detection** — combines head-pose, real
   eye-gaze direction, and on-device phone detection to notice when
   you've actually stopped paying attention (not just turned your head to
   glance at notes).
-- **Pose-challenge penalties** — get caught, and you have to physically
+- **Pose-challenge penalties** — if you are distracted for long, you have to physically
   match a gif/meme reference pose (expression + gaze + hand gesture,
   including genuinely requiring *movement* for gif-based challenges, not
   just landing in the final pose) before you're let back in.
 - **Push-up penalties** — repeated phone violations require real,
   counted push-ups (calibrated to your own arm length via a held T-pose)
   before you can resume.
-- **Pacing "heart bar"** — a Zelda-style row of hearts showing how far
+- **Pacing "heart bar"** — a Minecraft-style row of hearts showing how far
   along you *should* be versus where you actually are, freezing during
   penalties so a forced break doesn't count against you.
 - **AI engagement-credit judgment** — every 90 seconds, your recent
@@ -63,7 +63,7 @@ a property of whatever you point LM Studio at.
   and a **Spotify now-playing widget** with full transport controls —
   all built in.
 
-<!-- TODO: docs/assets/screenshots/lockdown-overview.png -->
+![Lockdown overview](docs/assets/screenshots/lockdown-overview.png)
 
 ### 🎙️ Voice Assistant
 - **Push-to-talk Q&A** — hold a key or button, ask a question out loud
@@ -88,7 +88,7 @@ theme-aware visual style.
 - **Standalone preview** — a 🎮 menu on the homepage lets you try any
   game any time, no strings attached, no timer.
 
-<!-- TODO: docs/assets/screenshots/minigames-menu.png -->
+![Mini-games menu](docs/assets/screenshots/minigames-menu.png)
 
 ### 🏠 Homepage
 - **Accordion-style layout** instead of tabs — any combination of
@@ -127,14 +127,14 @@ custom Wii-pointer cursor), applying instantly app-wide with a soft
 crossfade, plus a rounded, soft-shadowed "Arc browser"-style visual
 language across the whole app.
 
-<!-- TODO: docs/assets/gifs/theme-switching.gif -->
+![Theme switching](docs/assets/gifs/theme-switching.gif)
 
 ### 🔐 Accountability
 An encrypted (Windows DPAPI) local debt ledger tracks unfinished study
 time from early-left sessions and any owed push-up penalties, folding
 them into your next session rather than letting them silently vanish.
 
-<!-- TODO: docs/assets/gifs/pose-challenge.gif -->
+![Pose challenge](docs/assets/gifs/pose-challenge.gif)
 
 ## Requirements
 
@@ -144,7 +144,7 @@ them into your next session rather than letting them silently vanish.
 - A **webcam**, for Monitor Lockdown's distraction detection.
 - [**LM Studio**](https://lmstudio.ai/) running locally, for every AI
   feature (the app works without it, just with AI features disabled).
-- A **Notion integration token** (optional — most features degrade
+- A **Notion integration token** (some features degrade
   gracefully without one; see Getting Started).
 - An **NVIDIA GPU** is recommended (not required) if you want to use
   XTTS-v2 voice cloning at a reasonable speed — it'll run on CPU, just
