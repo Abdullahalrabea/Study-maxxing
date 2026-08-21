@@ -160,23 +160,6 @@ them into your next session rather than letting them silently vanish.
 
 ## Getting Started
 
-### Just want to use it?
-
-1. Download and run the installer from the
-   [latest release](https://github.com/Abdullahalrabea/Study-maxxing/releases/latest)
-   (no admin rights needed, installs per-user).
-2. (Optional, for AI features) Install and run [LM Studio](https://lmstudio.ai/),
-   load a model, and start its local server (default
-   `http://127.0.0.1:3812/v1`, configurable in Settings). Without this,
-   the app runs fine — AI features just won't respond.
-3. (Optional) Connect Notion — see **Notion Setup** below.
-
-That's it — voice cloning's CUDA runtime downloads itself in-app the
-first time you actually use it (a one-time ~2.5GB fetch), not something
-you install upfront.
-
-### Building from source
-
 1. Clone the repo and create a virtual environment.
 2. Install dependencies:
    ```
