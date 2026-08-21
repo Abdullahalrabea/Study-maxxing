@@ -44,6 +44,9 @@ a property of whatever you point LM Studio at.
   match a gif/meme reference pose (expression + gaze + hand gesture,
   including genuinely requiring *movement* for gif-based challenges, not
   just landing in the final pose) before you're let back in.
+
+![Pose challenge](docs/assets/gifs/pose-challenge.gif)
+
 - **Push-up penalties** — repeated phone violations require real,
   counted push-ups (calibrated to your own arm length via a held T-pose)
   before you can resume.
@@ -130,7 +133,6 @@ An encrypted (Windows DPAPI) local debt ledger tracks unfinished study
 time from early-left sessions and any owed push-up penalties, folding
 them into your next session rather than letting them silently vanish.
 
-![Pose challenge](docs/assets/gifs/pose-challenge.gif)
 
 ## Requirements
 
