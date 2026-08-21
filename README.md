@@ -75,8 +75,6 @@ a property of whatever you point LM Studio at.
 - Fully interruptible, cancelable mid-thought, with mic device selection
   and testing in Settings.
 
-<!-- TODO: docs/assets/gifs/voice-assistant-flow.gif -->
-
 ### 🎮 Mini-Games
 Five self-contained games — **Snake**, **15-Slide Puzzle**, **Memory
 Match**, **Minesweeper**, and **Sudoku** — all sharing a live
@@ -117,8 +115,6 @@ a **Schedule Assistant** form that can extract fields straight from a
 pasted syllabus screenshot (always landing in an editable box, never
 auto-written), and a **Study Planner** that spreads AI-estimated study
 time evenly across the days leading up to each deadline.
-
-<!-- TODO: docs/assets/screenshots/settings-voice.png -->
 
 ### 🎨 Themes
 9 full switchable color themes (including a terminal-green default, a
