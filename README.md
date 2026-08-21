@@ -8,20 +8,16 @@ local LLM, deep Notion integration, and a small library of break-time
 mini-games — built around one real workflow, shared here for anyone
 curious enough to try it or adapt it.
 
-Inside the app, the schedule- and lockdown-facing half of this — the
-Notion scheduling agent, the full-screen focus session, and the debt/
-accountability system underneath it — goes by its own name, **Study
-Warden**. You'll see that name in window titles and a few in-app labels;
-it's the same app, just a named subsystem rather than a separate product.
-
 ## What this actually is
 
-This was built for personal daily use — real coursework, a real Notion
-workspace, a real study routine — and is shared publicly as-is for
-anyone who wants to run it themselves, poke around the code, or fork it
-into something of their own. It isn't a polished commercial product;
-expect some rough edges and opinions baked in that fit one person's
-workflow.
+I built this to automate adding exam and project dates to Notion.
+It also helps determine how much time I should spend studying for each course, making sure I have enough time to prepare without cramming everything at the last minute.
+There is also a **Lockdown Mode** that automatically minimizes any open windows and only displays the slides for the course I'm studying;
+It is further reinforced by webcam monitoring to help keep me focused and prevent distractions.
+
+<!-- TODO: docs/assets/screenshots/homepage.png -->
+
+## Features
 
 **The AI features run entirely on a local LLM** via [LM
 Studio](https://lmstudio.ai/) (an OpenAI-compatible local server) — no
@@ -32,10 +28,6 @@ PC's specs** — a small model on a decent GPU can answer in a couple of
 seconds; a larger or reasoning-heavy model on a modest CPU can take
 significantly longer. This app doesn't (and can't) control that — it's
 a property of whatever you point LM Studio at.
-
-<!-- TODO: docs/assets/screenshots/homepage.png -->
-
-## Features
 
 ### 🔒 Monitor Lockdown — the core focus session
 - **Full-screen enforced study view** — once the webcam/AI models finish
@@ -159,6 +151,23 @@ them into your next session rather than letting them silently vanish.
   much slower.
 
 ## Getting Started
+
+### Just want to use it?
+
+1. Download and run the installer from the
+   [latest release](https://github.com/Abdullahalrabea/Study-maxxing/releases/latest)
+   (no admin rights needed, installs per-user).
+2. (Optional, for AI features) Install and run [LM Studio](https://lmstudio.ai/),
+   load a model, and start its local server (default
+   `http://127.0.0.1:3812/v1`, configurable in Settings). Without this,
+   the app runs fine — AI features just won't respond.
+3. (Optional) Connect Notion — see **Notion Setup** below.
+
+That's it — voice cloning's CUDA runtime downloads itself in-app the
+first time you actually use it (a one-time ~2.5GB fetch), not something
+you install upfront.
+
+### Building from source
 
 1. Clone the repo and create a virtual environment.
 2. Install dependencies:
