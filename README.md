@@ -173,10 +173,44 @@ them into your next session rather than letting them silently vanish.
 3. Install and run [LM Studio](https://lmstudio.ai/), load a model, and
    start its local server (default `http://127.0.0.1:3812/v1`,
    configurable in Settings).
-4. (Optional) Create a Notion integration, share the relevant
-   pages/databases with it, and paste the token + IDs into Settings →
-   Notion.
+4. (Optional) Connect Notion — see **Notion Setup** below.
 5. Run `python main.py`.
+
+### Notion Setup
+
+Two separate things: an **integration token** (API access, for the
+conversational agent and the Schedule/To-Do/Calendar panels) and an
+**embedded page URL** (just a normal Notion page shown live inside the
+app's homepage — no API involved). Both are optional and independent;
+skip either one and that part of the app just shows a "not configured"
+state instead.
+
+**Integration token:**
+1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
+   and click **+ New integration**.
+2. Give it a name (e.g. "Study Maxxing"), pick the workspace it should
+   belong to, and save.
+3. On the integration's page, copy the **Internal Integration Secret**.
+4. Paste it into **Settings → Notion → Integration token**.
+5. **Share your pages with it** — this is the step that's easy to miss.
+   Creating the integration doesn't give it access to anything by
+   default. Open each page/database the app needs (your schedule table,
+   to-do list page, study calendar), click **···** in the top right →
+   **Connections** → **Connect to** → select your integration. Do this
+   for every page/database you want the app to read or write.
+6. The **table block ID**, **to-do page ID**, and **calendar database
+   ID** fields all use the same trick: open the page, **Share → Copy
+   link**, and paste it — the app only needs the ID at the end of that
+   URL, but the full link works fine too.
+
+**Embedded page URL:**
+1. Open whatever Notion page you'd like visible on the homepage, in your
+   normal browser.
+2. Copy its URL (address bar, or **Share → Copy link**).
+3. Paste it into **Settings → Notion → Embedded page URL**.
+4. On first launch, the embedded view will show a normal Notion login
+   screen (it's a real, separate browser session inside the app) — log
+   in once and it stays signed in after that, same as a browser tab.
 
 First launch works with nothing configured — Notion-dependent panels
 show a "not configured" state until you add your token in Settings, and
