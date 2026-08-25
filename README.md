@@ -44,9 +44,6 @@ a property of whatever you point LM Studio at.
   match a gif/meme reference pose (expression + gaze + hand gesture,
   including genuinely requiring *movement* for gif-based challenges, not
   just landing in the final pose) before you're let back in.
-
-![Pose challenge](docs/assets/gifs/pose-challenge.gif)
-
 - **Push-up penalties** — repeated phone violations require real,
   counted push-ups (calibrated to your own arm length via a held T-pose)
   before you can resume.
@@ -66,7 +63,7 @@ a property of whatever you point LM Studio at.
   and a **Spotify now-playing widget** with full transport controls —
   all built in.
 
-![Lockdown overview](docs/assets/screenshots/lockdown-overview.png)
+  ![Pose challenge](docs/assets/gifs/pose-challenge.gif)
 
 ### 🎙️ Voice Assistant
 - **Push-to-talk Q&A** — hold a key or button, ask a question out loud
