@@ -202,7 +202,10 @@ state instead.
    to-do list page, study calendar), click **···** in the top right →
    **Connections** → **Connect to** → select your integration. Do this
    for every page/database you want the app to read or write.
-6. The **table block ID**, **to-do page ID**, and **calendar database
+6. For the **table block ID** open notion in the web and click the ⠿ button then copy link to table id;
+   from that text copy after the # and paste in Study maxxing app.
+   
+7. For **to-do page ID**, and **calendar database
    ID** fields all use the same trick: open the page, **Share → Copy
    link**, and paste it — the app only needs the ID at the end of that
    URL, but the full link works fine too.
