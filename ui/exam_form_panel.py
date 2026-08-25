@@ -223,6 +223,7 @@ class ExamFormPanel(QWidget):
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(14)
 
         setup_card = Card()
@@ -238,19 +239,20 @@ class ExamFormPanel(QWidget):
         self.reload_button.clicked.connect(self._reload_table)
         setup_layout.addWidget(self.reload_button)
 
-        screenshot_row = QHBoxLayout()
+        # Three buttons stacked vertically so none are clipped at narrow widths
         self.paste_button = QPushButton("Paste screenshot")
         self.paste_button.clicked.connect(self._on_paste_clicked)
-        screenshot_row.addWidget(self.paste_button)
+        setup_layout.addWidget(self.paste_button)
+
         self.extract_button = QPushButton("Extract from image")
         self.extract_button.setEnabled(False)
         self.extract_button.clicked.connect(self._on_extract_clicked)
-        screenshot_row.addWidget(self.extract_button)
+        setup_layout.addWidget(self.extract_button)
+
         self.clear_images_button = QPushButton("Clear attached files")
         self.clear_images_button.setEnabled(False)
         self.clear_images_button.clicked.connect(self._on_clear_images_clicked)
-        screenshot_row.addWidget(self.clear_images_button)
-        setup_layout.addLayout(screenshot_row)
+        setup_layout.addWidget(self.clear_images_button)
 
         self.attached_label = QLabel("No screenshots attached")
         self.attached_label.setWordWrap(True)
@@ -314,7 +316,12 @@ class ExamFormPanel(QWidget):
         self.field_edits = {}
         for field in field_names:
             edit = QLineEdit()
-            label = "Course name" if field == "course_name" else field
+            if field == "course_name":
+                label = "Course name"
+                edit.setPlaceholderText("e.g. CS 301")
+            else:
+                label = field
+                edit.setPlaceholderText("Date, TBA, or N/A")
             self.form_layout.addRow(f"{label}:", edit)
             self.field_edits[field] = edit
 

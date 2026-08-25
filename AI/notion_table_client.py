@@ -68,7 +68,11 @@ def _cell_text(cell):
 
 
 def _text_cell(text):
-    """Build a single Notion cell (a list with one rich-text run) from a plain string."""
+    """Build a single Notion cell (a list with one rich-text run) from a plain string.
+    Returns an empty list for blank text -- Notion rejects rich_text objects with an
+    empty content string; an empty list is the correct way to clear a cell."""
+    if not text:
+        return []
     return [{"type": "text", "text": {"content": text}}]
 
 
@@ -168,22 +172,83 @@ class NotionTableClient:
         self.token = token
         self.table_block_id = table_block_id
 
-    def fetch_rows(self):
-        """Returns the raw list of table_row blocks, in order, straight from
-        Notion (each has an 'id' and 'table_row': {'cells': [...]})."""
-        rows = []
-        url = f"{NOTION_API_BASE}/blocks/{self.table_block_id}/children"
+    def _fetch_children(self, block_id):
+        """Fetches all direct children of block_id, paginated."""
+        results = []
+        url = f"{NOTION_API_BASE}/blocks/{block_id}/children"
         params = {"page_size": 100}
         while True:
             resp = requests.get(url, headers=_headers(self.token), params=params, timeout=15)
             if resp.status_code >= 400:
                 raise NotionTableError(_explain_error(resp))
             data = resp.json()
-            rows.extend(b for b in data["results"] if b.get("type") == "table_row")
+            results.extend(data.get("results", []))
             if not data.get("has_more"):
                 break
             params["start_cursor"] = data["next_cursor"]
-        return rows
+        return results
+
+    def _find_table_block(self, block_id, max_depth=3):
+        """Recursively searches for the first 'table' block under block_id,
+        drilling into column_list, column, synced_block, etc."""
+        if max_depth <= 0:
+            return None
+        try:
+            children = self._fetch_children(block_id)
+        except NotionTableError:
+            return None
+        table = next((b for b in children if b.get("type") == "table"), None)
+        if table is not None:
+            return table
+        for b in children:
+            if b.get("has_children") and b.get("type") in ("column_list", "column", "synced_block", "toggle"):
+                found = self._find_table_block(b["id"], max_depth - 1)
+                if found is not None:
+                    return found
+        return None
+
+    def fetch_rows(self):
+        """Returns the raw list of table_row blocks, in order, straight from
+        Notion (each has an 'id' and 'table_row': {'cells': [...]}).
+
+        Auto-detects the common mistake of using a page/parent block ID
+        instead of the table block ID itself: if the configured block's
+        children contain a 'table' block (or tables nested inside column
+        layouts), it drills into the first table found automatically."""
+        children = self._fetch_children(self.table_block_id)
+
+        # Happy path: the block IS the table -- its children are table_row blocks
+        rows = [b for b in children if b.get("type") == "table_row"]
+        if rows:
+            return rows
+
+        # Fallback: the block is a page or container -- find the first table inside it
+        table_block = next((b for b in children if b.get("type") == "table"), None)
+        if table_block is None:
+            for b in children:
+                if b.get("has_children"):
+                    table_block = self._find_table_block(b["id"], max_depth=3)
+                    if table_block is not None:
+                        break
+
+        if table_block is not None:
+            rows = [b for b in self._fetch_children(table_block["id"]) if b.get("type") == "table_row"]
+            if rows:
+                return rows
+
+        # Nothing found -- give an actionable error
+        types_found = list({b.get("type") for b in children if b.get("type")})
+        if not children:
+            raise NotionTableError(
+                "Notion returned no blocks for that ID. Check that:\n"
+                "  1. The block ID in Settings is correct.\n"
+                "  2. The integration has been shared with the page (Notion → Connections)."
+            )
+        raise NotionTableError(
+            f"No table found at that block ID (found block types: {types_found}).\n"
+            "To get the table's block ID: hover the table in Notion → click the ⠿ drag handle "
+            "→ 'Copy link to block'. Use the ID after the '#' in that URL."
+        )
 
     def get_state(self):
         """Returns a TableState describing the current grid contents and
@@ -191,8 +256,6 @@ class NotionTableClient:
         row's own first cell -- reads whatever the real table actually has,
         however many rows, in whatever order, no fixed count expected."""
         rows = self.fetch_rows()
-        if not rows:
-            raise NotionTableError("The table has no rows at all -- nothing to read.")
 
         row_labels = [_cell_text(row["table_row"]["cells"][0]) for row in rows]
         num_columns = len(rows[0]["table_row"]["cells"]) - 1  # minus the label column

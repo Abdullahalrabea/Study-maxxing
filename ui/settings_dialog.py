@@ -43,6 +43,29 @@ def _extract_youtube_handle(text):
     match = re.search(r"@([A-Za-z0-9_.-]+)", text)
     return match.group(1) if match else text
 
+
+_NOTION_ID_RE = re.compile(
+    r"([0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12})"
+)
+
+
+def _sanitize_notion_id(value):
+    """Extracts a bare 32-hex-char Notion ID (with dashes) from whatever
+    the user pasted -- a full notion.so URL, a URL with an anchor fragment
+    (e.g. ...PageTitle-abc123...#block456...), or an already-clean ID all
+    work. Returns the found ID normalised to 8-4-4-4-12 dash format, or
+    the original value unchanged if no UUID-shaped sequence is found."""
+    if not value:
+        return value
+    m = _NOTION_ID_RE.search(value)
+    if not m:
+        return value
+    raw = m.group(1).replace("-", "")
+    if len(raw) != 32:
+        return value
+    return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+
+
 SETTINGS_ORG = "StudyWarden"
 SETTINGS_APP = "StudyWarden"
 
@@ -333,9 +356,9 @@ class SettingsDialog(QDialog):
 
     def _on_notion_save_clicked(self):
         self._settings.setValue(KEY_NOTION_TOKEN, self.notion_token_edit.text().strip())
-        self._settings.setValue(KEY_NOTION_TABLE_BLOCK_ID, self.notion_table_edit.text().strip())
-        self._settings.setValue(KEY_NOTION_TODO_PAGE_ID, self.notion_todo_edit.text().strip())
-        self._settings.setValue(KEY_NOTION_CALENDAR_DATABASE_ID, self.notion_calendar_edit.text().strip())
+        self._settings.setValue(KEY_NOTION_TABLE_BLOCK_ID, _sanitize_notion_id(self.notion_table_edit.text().strip()))
+        self._settings.setValue(KEY_NOTION_TODO_PAGE_ID, _sanitize_notion_id(self.notion_todo_edit.text().strip()))
+        self._settings.setValue(KEY_NOTION_CALENDAR_DATABASE_ID, _sanitize_notion_id(self.notion_calendar_edit.text().strip()))
         self._settings.setValue(KEY_NOTION_EMBED_URL, self.notion_embed_edit.text().strip())
         self.notion_status_label.setText("Saved -- restart Study Maxxing for this to take effect.")
 

@@ -198,7 +198,7 @@ class NotionClient:
         if block_type == "to_do":
             body["checked"] = False
         payload = {"children": [{"type": block_type, block_type: body}]}
-        result = self._patch(f"/blocks/{parent_id}/children", payload)
+        result = self._post(f"/blocks/{parent_id}/children", payload)
         new_block = result["results"][0]
         return {"id": new_block["id"], "type": block_type}
 

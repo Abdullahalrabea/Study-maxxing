@@ -18,7 +18,7 @@ from PyQt6.QtCore import Qt, QEvent, QTimer, QObject, pyqtSignal, QSettings, QPr
 from PyQt6.QtGui import QCursor, QPixmap, QIcon, QColor
 from PyQt6.QtWidgets import (
     QWidget, QGridLayout, QLabel, QHBoxLayout, QVBoxLayout, QPushButton, QSizePolicy, QApplication,
-    QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QFrame
+    QGraphicsDropShadowEffect, QFrame
 )
 
 from paths import get_resource_dir
@@ -421,54 +421,12 @@ class Card(QFrame):
         self._shadow.setOffset(0, CARD_SHADOW_Y)
 
 
-PRESS_FADE_MS = 90  # button press-feedback dip -- fast, "instant feedback" tier
-
-
-class ButtonPressAnimator(QObject):
-    """Installed application-wide (see install_button_press_feedback): gives
-    every QPushButton a quick opacity dip on press and recovery on release,
-    real tactile feedback beyond the :pressed color swap in the stylesheet.
-    Opacity, not a scale/geometry animation -- QSS has no transform
-    property, and animating geometry directly fights Qt's layout engine for
-    any layout-managed widget (i.e. every button in this app)."""
-
-    def eventFilter(self, obj, event):
-        if isinstance(obj, QPushButton) and obj.isEnabled():
-            if event.type() == QEvent.Type.MouseButtonPress:
-                self._animate(obj, 0.55)
-            elif event.type() in (QEvent.Type.MouseButtonRelease, QEvent.Type.Leave):
-                self._animate(obj, 1.0)
-        return False  # never consume -- this only observes
-
-    def _animate(self, button, target_opacity):
-        effect = button.graphicsEffect()
-        if not isinstance(effect, QGraphicsOpacityEffect):
-            effect = QGraphicsOpacityEffect(button)
-            effect.setOpacity(1.0)
-            button.setGraphicsEffect(effect)
-        # Reuse one animation per button (stored on the effect) and redirect
-        # it on each new press/release rather than stacking new ones, same
-        # pattern as CollapsibleSection's interruptible reveal.
-        anim = getattr(effect, "_press_anim", None)
-        if anim is None:
-            anim = QPropertyAnimation(effect, b"opacity", button)
-            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            effect._press_anim = anim
-        anim.stop()
-        anim.setDuration(PRESS_FADE_MS)
-        anim.setStartValue(effect.opacity())
-        anim.setEndValue(target_opacity)
-        anim.start()
-
-
 def install_button_press_feedback(app):
-    """Call once at startup with the QApplication instance. Returns the
-    animator so the caller can keep a reference alive (an event filter with
-    no surviving reference gets garbage-collected and silently stops
-    working)."""
-    animator = ButtonPressAnimator(app)
-    app.installEventFilter(animator)
-    return animator
+    """No-op kept for call-site compatibility -- the opacity animator was
+    removed because QGraphicsOpacityEffect causes buttons to shift position
+    on press. The :pressed QSS rule (accent background + color swap) already
+    provides clear visual feedback without any layout side-effects."""
+    return None
 
 
 class _DefaultCursorInstaller(QObject):

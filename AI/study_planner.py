@@ -50,23 +50,39 @@ class StudyPlannerError(Exception):
 
 
 def _parse_humanized_date(text, today=None):
-    """Parses a humanize_date()-produced string like "April 5th" or "April
-    5th at 2:00 PM" back into a real date. There's no year in the stored
-    text, so this picks whichever of this-year/next-year lands in the
-    future relative to today (an exam you're prepping for is never in the
-    past). Returns None for anything that doesn't look like a real date
-    (blank, "TBA", "N/A", unparseable)."""
+    """Parses a date string from the Notion table into a real date object.
+    Handles all formats that may appear in the table:
+      - humanize_date() output:  "April 5th" / "April 5th at 2:00 PM"
+      - Full humanized with year: "April 5th, 2026" / "April 5 2026"
+      - ISO:                      "2026-04-05"
+      - US numeric:               "04/05/2026"
+      - European numeric:         "05/04/2026" (tried as fallback)
+      - Dot-separated:            "05.04.2026"
+    Year-less formats pick whichever of this-year/next-year is in the
+    future relative to today (an exam is never in the past).
+    Returns None for blank / "TBA" / "N/A" / anything unparseable."""
     if not text or not text.strip():
         return None
     today = today or date.today()
 
+    # Strip ordinal suffixes ("5th" -> "5") and drop trailing time info
     cleaned = _ORDINAL_RE.sub(r"\1", text.strip())
-    cleaned = re.split(r"\s+at\s+", cleaned, maxsplit=1)[0]  # drop a trailing time, if any
+    cleaned_no_time = re.split(r"\s+at\s+", cleaned, maxsplit=1)[0].strip()
+    # also strip a trailing comma+year that some entries have, e.g. "April 5, 2026"
+    cleaned_no_time = cleaned_no_time.replace(",", " ")
 
+    # ---- 1. Try formats that include a year first (unambiguous) ----
+    for fmt in ("%B %d %Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%d.%m.%Y", "%m.%d.%Y"):
+        try:
+            return datetime.strptime(cleaned_no_time, fmt).date()
+        except ValueError:
+            pass
+
+    # ---- 2. Year-less "Month Day" format: pick future year ----
     candidates = []
     for year in (today.year, today.year + 1):
         try:
-            candidates.append(datetime.strptime(f"{cleaned} {year}", "%B %d %Y").date())
+            candidates.append(datetime.strptime(f"{cleaned_no_time} {year}", "%B %d %Y").date())
         except ValueError:
             continue
     if not candidates:

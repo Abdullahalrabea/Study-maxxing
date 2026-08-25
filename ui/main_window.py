@@ -78,6 +78,30 @@ def _resolve_setting(env_var, settings, settings_key, default):
     return os.environ.get(env_var) or settings.value(settings_key) or default
 
 
+import re as _re
+
+_NOTION_ID_RE = _re.compile(
+    r"([0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12})"
+)
+
+
+def _sanitize_notion_id(value):
+    """Extracts a bare 32-hex-char Notion ID (with dashes) from whatever
+    the user pasted -- a full notion.so URL, a URL with an anchor fragment,
+    or an already-clean ID all work. Returns the found ID (with dashes
+    inserted in the standard 8-4-4-4-12 pattern) or the original value
+    unchanged if no UUID-shaped sequence can be found."""
+    if not value:
+        return value
+    m = _NOTION_ID_RE.search(value)
+    if not m:
+        return value
+    raw = m.group(1).replace("-", "")
+    if len(raw) != 32:
+        return value
+    return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+
+
 def _themed_splitter(orientation):
     """A QSplitter whose handle is actually visible/grabbable (the default
     Qt handle is a near-invisible 1px seam) -- a plain color at rest, the
@@ -1185,16 +1209,16 @@ class MainWindow(QMainWindow):
         pages_splitter.setChildrenCollapsible(False)  # dragging resizes pages, it doesn't hide them -- that's what each page's own header toggle is for
 
         notion_token = _resolve_setting("NOTION_TOKEN", self._app_settings, KEY_NOTION_TOKEN, DEFAULT_NOTION_TOKEN)
-        table_block_id = _resolve_setting(
+        table_block_id = _sanitize_notion_id(_resolve_setting(
             "NOTION_TABLE_BLOCK_ID", self._app_settings, KEY_NOTION_TABLE_BLOCK_ID, DEFAULT_NOTION_TABLE_BLOCK_ID
-        )
-        todo_page_id = _resolve_setting(
+        ))
+        todo_page_id = _sanitize_notion_id(_resolve_setting(
             "NOTION_TODO_PAGE_ID", self._app_settings, KEY_NOTION_TODO_PAGE_ID, DEFAULT_NOTION_TODO_PAGE_ID
-        )
-        calendar_database_id = _resolve_setting(
+        ))
+        calendar_database_id = _sanitize_notion_id(_resolve_setting(
             "NOTION_CALENDAR_DATABASE_ID", self._app_settings, KEY_NOTION_CALENDAR_DATABASE_ID,
             DEFAULT_NOTION_CALENDAR_DATABASE_ID,
-        )
+        ))
         self._current_notion = {
             "token": notion_token,
             "table_block_id": table_block_id,
