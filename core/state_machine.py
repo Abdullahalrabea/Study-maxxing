@@ -48,6 +48,7 @@ class StudyTimerWidget(QWidget):
         super().__init__(parent)
         self._paused_for_distraction = False
         self._paused_for_lockdown_exit = False
+        self._completed_study_seconds = None
 
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -119,6 +120,22 @@ class StudyTimerWidget(QWidget):
             self.session_starting.emit()
         elif self.phase == "awaiting_break":
             self.start_break_with_duration(self.break_left)
+
+    def reset_for_new_session(self, total_minutes):
+        """Prepare another session after the previous one has finished."""
+        if self.phase != "done":
+            return False
+        self.timer.stop()
+        self._paused_for_distraction = False
+        self._paused_for_lockdown_exit = False
+        self._completed_study_seconds = None
+        self.break_left = BREAK_BETWEEN_BLOCKS_SECONDS
+        self.phase = "not_started"
+        self.set_total_minutes(total_minutes)
+        self.start_button.setText("Start Focus Block")
+        self.start_button.setEnabled(True)
+        self.start_button.show()
+        return True
 
     def begin_study_countdown(self):
         """Called once the distraction monitor confirms it's fully loaded
@@ -209,6 +226,21 @@ class StudyTimerWidget(QWidget):
         self.time_left = 0
         self.update_clock()
 
+    def complete_session(self):
+        """Manually finish every remaining block, preserving actual study time."""
+        if self.phase not in {"study", "awaiting_break", "break"}:
+            return False
+        self._completed_study_seconds = self.study_seconds_elapsed()
+        self.timer.stop()
+        self._paused_for_distraction = False
+        self._paused_for_lockdown_exit = False
+        self.phase = "done"
+        self.time_left = 0
+        self.time_label.setText("Done!")
+        self.start_button.hide()
+        self.finished.emit()
+        return True
+
     def skip_break(self):
         """Moves straight to the next study block, skipping the rest of the
         break -- from awaiting_break (BreakChoiceWindow's own "Skip"
@@ -247,7 +279,8 @@ class StudyTimerWidget(QWidget):
         the one that stopped it."""
         if self._paused_for_distraction:
             self._paused_for_distraction = False
-            self.timer.start(1000)
+            if not self._paused_for_lockdown_exit:
+                self.timer.start(1000)
 
     def total_study_seconds(self):
         """Total STUDY time (excludes breaks) this whole session is
@@ -268,7 +301,7 @@ class StudyTimerWidget(QWidget):
         if self.phase in ("awaiting_break", "break"):
             return sum(self.blocks[:self.block_index + 1])
         if self.phase == "done":
-            return sum(self.blocks)
+            return self._completed_study_seconds if self._completed_study_seconds is not None else sum(self.blocks)
         return sum(self.blocks[:self.block_index]) + (self.blocks[self.block_index] - self.time_left)
 
     def pause_for_lockdown_exit(self):
@@ -279,7 +312,7 @@ class StudyTimerWidget(QWidget):
         it actually paused something (i.e. there's now something to
         resume), False if the timer wasn't running anyway (e.g. exited
         during awaiting_break, or the session had already finished)."""
-        if self.timer.isActive():
+        if self.timer.isActive() or (self.phase == "study" and self._paused_for_distraction):
             self.timer.stop()
             self._paused_for_lockdown_exit = True
             return True
@@ -290,7 +323,8 @@ class StudyTimerWidget(QWidget):
         the one that stopped it."""
         if self._paused_for_lockdown_exit:
             self._paused_for_lockdown_exit = False
-            self.timer.start(1000)
+            if not self._paused_for_distraction:
+                self.timer.start(1000)
 
 
 class StudyWarden(QMainWindow):

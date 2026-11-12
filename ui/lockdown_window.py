@@ -20,6 +20,7 @@
 # to tab away, not trapping you if something's wrong.
 
 import time
+import math
 from datetime import datetime
 
 import numpy as np
@@ -27,7 +28,7 @@ import fitz  # PyMuPDF
 from PyQt6.QtCore import Qt, QEvent, QTimer, QThread, QPropertyAnimation, QEasingCurve, pyqtSignal, QSettings
 from PyQt6.QtGui import QImage, QPixmap, QPainter
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QGraphicsOpacityEffect, QDialog, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QGraphicsOpacityEffect, QDialog, QFrame, QComboBox
 )
 
 import lockdown_os
@@ -45,7 +46,6 @@ DIMMED_OPACITY = 0.25  # how much the PDF fades while a pose challenge is up
 COMPANION_APPS_MONITOR = 1  # "monitor 2" (0-based) -- where Discord/Spotify get tiled
 FADE_MS = 300  # entrance/exit fade duration -- the one deliberate motion moment for the highest-stakes transition in the app
 LOCKDOWN_MONITOR = 0         # "monitor 1" -- where this window itself goes full-screen
-MAX_RENDERED_PAGES = 80      # sane cap so a huge PDF can't stall the UI or eat all your RAM
 ZOOM_STEP = 1.2
 MIN_ZOOM = 0.4
 MAX_ZOOM = 4.0
@@ -267,11 +267,12 @@ class SessionReviewDialog(QDialog):
 
 class LockdownWindow(QWidget):
     exit_requested = pyqtSignal()
+    completion_requested = pyqtSignal()
     material_completed = pyqtSignal()  # fires once, when engagement-credited progress hits 100% and the
                                         # session-review flow has resolved -- lets main_window.py mark the
                                         # matching Notion task done (see _on_material_completed())
 
-    def __init__(self, pdf_path, timer_widget, total_slides=0, deadline_passed=False, parent=None):
+    def __init__(self, pdf_path, timer_widget, total_slides=0, deadline_passed=False, parent=None, session_label=""):
         super().__init__(parent)
         self.setWindowTitle("Study Warden -- Lockdown")
         self._timer_widget = timer_widget
@@ -283,11 +284,21 @@ class LockdownWindow(QWidget):
                                                   # never blocks Esc/Ctrl+Shift+Alt/Exit Lockdown
         self._pdf_doc = None
         self._material_completed = False  # guards _on_material_completed() so it only ever fires once
+        self._session_stopped = False
         self._review_worker = None
         self._zoom_factor = 1.0  # multiplier on top of the fit-width baseline
         self._companion_worker = None
-        self._page_labels = []          # rendered page QLabels in order -- used to find which one is actually
-                                         # on screen right now (see _current_visible_page())
+        self._page_labels = []  # Sized placeholders for every page; only nearby pages hold images.
+        self._rendered_pages = set()
+        self._pending_pdf_pages = []
+        self._pdf_render_size = None
+        self._pdf_relayouting = False
+        self._pdf_render_timer = QTimer(self)
+        self._pdf_render_timer.setSingleShot(True)
+        self._pdf_render_timer.timeout.connect(self._render_next_pdf_page)
+        self._pdf_layout_timer = QTimer(self)
+        self._pdf_layout_timer.setSingleShot(True)
+        self._pdf_layout_timer.timeout.connect(self._render_all_pages)
         self._total_slides_override = total_slides  # exact slide count the caller's time estimate was based on
                                                       # (e.g. Revision's "covered up to slide N") -- 0 means "not
                                                       # given", fall back to the PDF's real page count once loaded
@@ -468,6 +479,10 @@ class LockdownWindow(QWidget):
         self._apply_clock_theme(theme.manager.colors)
         theme.manager.changed.connect(self._on_clock_theme_changed)
         time_exit_column.addWidget(self.clock_label)
+        self.complete_session_button = QPushButton("Mark session completed")
+        self.complete_session_button.setToolTip("Finish this entire session and update its Notion calendar entry.")
+        self.complete_session_button.clicked.connect(self.completion_requested.emit)
+        time_exit_column.addWidget(self.complete_session_button)
         self._clock_timer = QTimer(self)
         self._clock_timer.timeout.connect(self._update_clock)
         self._clock_timer.start(1000)
@@ -513,6 +528,15 @@ class LockdownWindow(QWidget):
         # ---- body: left (tools + slides) | right (Notepad + YouTube) ----
         body_row = QHBoxLayout()
         left_column = QVBoxLayout()
+        if session_label:
+            session_title = QLabel(session_label)
+            session_title.setWordWrap(True)
+            left_column.addWidget(session_title)
+        self.document_combo = QComboBox()
+        self.document_combo.setToolTip("Jump to an uploaded document or chapter")
+        self.document_combo.activated.connect(self._jump_to_material)
+        self.document_combo.hide()
+        left_column.addWidget(self.document_combo)
 
         # "tools": annotation toolbar (draws directly on the material --
         # see annotation_overlay.py, pages are flat rendered images so
@@ -578,9 +602,9 @@ class LockdownWindow(QWidget):
         revise_row.addWidget(self.revise_dismiss_button)
         left_column.addLayout(revise_row)
 
-        # Every page gets rendered as its own QLabel, stacked vertically in
-        # this container -- the whole document scrolls continuously as one
-        # long strip rather than one page at a time with Prev/Next buttons.
+        # Every page has a sized QLabel so the entire document can scroll
+        # continuously. Images are loaded near the viewport and released
+        # off screen, so long course packets don't need a page-count cap.
         self.pdf_container = QWidget()
         self.pdf_container_layout = QVBoxLayout(self.pdf_container)
         self.pdf_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -589,6 +613,7 @@ class LockdownWindow(QWidget):
         self.pdf_scroll = QScrollArea()
         self.pdf_scroll.setWidgetResizable(True)
         self.pdf_scroll.setWidget(self.pdf_container)
+        self.pdf_scroll.verticalScrollBar().valueChanged.connect(self._queue_visible_pdf_pages)
         self.pdf_scroll.viewport().installEventFilter(self)  # Ctrl+wheel zoom
         left_column.addWidget(self.pdf_scroll, 1)
 
@@ -644,8 +669,7 @@ class LockdownWindow(QWidget):
         if not pdf_path:
             self._show_message(
                 "No study material found for today.\n\n"
-                "Attach a PDF to today's course in the Study Planner and it'll show up here "
-                "automatically next time."
+                "Use Upload material on the main screen to save this course's slides and notes."
             )
             return
         try:
@@ -654,6 +678,10 @@ class LockdownWindow(QWidget):
             self._show_message(f"Couldn't open today's material ({pdf_path}):\n{e}")
             return
         self._effective_total_slides = self._total_slides_override or len(self._pdf_doc)
+        for level, title, page in self._pdf_doc.get_toc():
+            if level == 1:
+                self.document_combo.addItem(title, page - 1)
+        self.document_combo.setVisible(self.document_combo.count() > 1)
         self._set_pace_visible(self._effective_total_slides > 0)
         # Deferred rather than called directly: at construction time (before
         # this widget has actually been shown), the scroll area's viewport
@@ -661,14 +689,25 @@ class LockdownWindow(QWidget):
         # would make the very first fit-width render come out undersized.
         # By the next event-loop iteration (still before the caller gets a
         # chance to do anything else), it has real geometry.
-        QTimer.singleShot(0, self._render_all_pages)
+        self._pdf_layout_timer.start(0)
+
+    def _jump_to_material(self, index):
+        page = self.document_combo.itemData(index)
+        if page is not None and 0 <= page < len(self._page_labels):
+            self.pdf_scroll.verticalScrollBar().setValue(self._page_labels[page].y())
 
     def _clear_pdf_container(self):
+        self._pdf_render_timer.stop()
+        self._pending_pdf_pages = []
+        self._rendered_pages.clear()
+        self._pdf_render_size = None
         self._page_labels = []
         while self.pdf_container_layout.count():
             item = self.pdf_container_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                if isinstance(widget, QLabel):
+                    widget.clear()
                 widget.deleteLater()
 
     def _show_message(self, text):
@@ -679,40 +718,92 @@ class LockdownWindow(QWidget):
         self.pdf_container_layout.addWidget(label)
 
     def _render_all_pages(self):
-        if self._pdf_doc is None:
+        if self._pdf_doc is None or self._session_stopped:
             return
-        self._clear_pdf_container()
-        # Fit-width * zoom factor: fit-width is the baseline (each page
-        # exactly as wide as the viewport at 100%), _zoom_factor scales up
-        # or down from there -- see _on_zoom_in/_on_zoom_out.
         viewport_width = max(self.pdf_scroll.viewport().width(), 200)
-        page_count = len(self._pdf_doc)
-        render_count = min(page_count, MAX_RENDERED_PAGES)
-        for i in range(render_count):
+        render_size = (viewport_width, self._zoom_factor)
+        if self._pdf_render_size == render_size:
+            self._queue_visible_pdf_pages()
+            return
+
+        # Keep the same part of the same slide visible across zoom/resize.
+        scrollbar = self.pdf_scroll.verticalScrollBar()
+        anchor = self._current_visible_page()
+        offset = 0.0
+        if anchor is not None:
+            label = self._page_labels[anchor]
+            offset = (scrollbar.value() - label.y()) / max(1, label.height())
+
+        self._pdf_relayouting = True
+        self._pdf_render_timer.stop()
+        self._pending_pdf_pages = []
+        if len(self._page_labels) != len(self._pdf_doc):
+            self._clear_pdf_container()
+            for i in range(len(self._pdf_doc)):
+                label = QLabel()
+                label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.pdf_container_layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignHCenter)
+                self._page_labels.append(label)
+        self._rendered_pages.clear()
+        for i, label in enumerate(self._page_labels):
             page = self._pdf_doc[i]
-            page_width_pt = page.rect.width or 1
-            zoom = max(viewport_width / page_width_pt, 0.1) * self._zoom_factor
-            rendered = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            scale = max(viewport_width / (page.rect.width or 1), 0.1) * self._zoom_factor
+            label.clear()
+            label.setText(f"Slide {i + 1}")
+            label.setFixedSize(math.ceil(page.rect.width * scale), math.ceil(page.rect.height * scale))
+        self._pdf_render_size = render_size
+        self.pdf_container_layout.activate()
+        self.pdf_container.adjustSize()
+        if anchor is not None:
+            label = self._page_labels[anchor]
+            scrollbar.setValue(round(label.y() + offset * label.height()))
+        self._pdf_relayouting = False
+        self._queue_visible_pdf_pages()
+
+    def _queue_visible_pdf_pages(self, *_):
+        if self._pdf_doc is None or self._session_stopped or not self._page_labels or self._pdf_relayouting:
+            return
+        top = self.pdf_scroll.verticalScrollBar().value()
+        height = self.pdf_scroll.viewport().height()
+        # One viewport of prefetch on either side keeps normal scrolling
+        # smooth, while retaining only a few page images in memory.
+        nearby = {
+            i for i, label in enumerate(self._page_labels)
+            if label.y() + label.height() >= top - height and label.y() <= top + height * 2
+        }
+        for i in self._rendered_pages - nearby:
+            self._page_labels[i].clear()
+            self._page_labels[i].setText(f"Slide {i + 1}")
+        self._rendered_pages.intersection_update(nearby)
+        center = top + height / 2
+        self._pending_pdf_pages = sorted(
+            nearby - self._rendered_pages,
+            key=lambda i: abs(self._page_labels[i].y() + self._page_labels[i].height() / 2 - center),
+        )
+        if self._pending_pdf_pages:
+            self._pdf_render_timer.start(0)
+        else:
+            self._pdf_render_timer.stop()
+
+    def _render_next_pdf_page(self):
+        if self._pdf_doc is None or self._session_stopped or not self._pending_pdf_pages:
+            return
+        i = self._pending_pdf_pages.pop(0)
+        label = self._page_labels[i]
+        page = self._pdf_doc[i]
+        scale = max(self._pdf_render_size[0] / (page.rect.width or 1), 0.1) * self._zoom_factor
+        try:
+            rendered = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False)
             image = QImage(rendered.samples, rendered.width, rendered.height,
-                            rendered.stride, QImage.Format.Format_RGB888)
-            page_label = QLabel()
-            page_label.setPixmap(QPixmap.fromImage(image))
-            page_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-            self.pdf_container_layout.addWidget(page_label)
-            self._page_labels.append(page_label)
-        if render_count < page_count:
-            note = QLabel(f"(showing the first {render_count} of {page_count} pages)")
-            note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.pdf_container_layout.addWidget(note)
-
-        # The annotation canvas is kept in sync with the container's real
-        # size via eventFilter()'s Resize handling above, not here --
-        # this layout change doesn't take visible effect synchronously.
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self._pdf_doc is not None:
-            self._render_all_pages()  # re-scale every page to the new width
+                           rendered.stride, QImage.Format.Format_RGB888)
+            label.setPixmap(QPixmap.fromImage(image))
+        except Exception as error:
+            label.setText(f"Couldn't display slide {i + 1}: {error}")
+        self._rendered_pages.add(i)
+        # Yield between pages so camera updates, the countdown and input
+        # continue to be processed even when jumping to a distant chapter.
+        if self._pending_pdf_pages:
+            self._pdf_render_timer.start(0)
 
     # ---- header clock ----
 
@@ -743,6 +834,8 @@ class LockdownWindow(QWidget):
             self._render_all_pages()
 
     def eventFilter(self, obj, event):
+        if obj is self.pdf_scroll.viewport() and event.type() == QEvent.Type.Resize and not self._session_stopped:
+            self._pdf_layout_timer.start(60)
         if obj is self.pdf_scroll.viewport() and event.type() == QEvent.Type.Wheel:
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 if event.angleDelta().y() > 0:
@@ -758,6 +851,7 @@ class LockdownWindow(QWidget):
             # schedule, not necessarily synchronously with adjustSize()).
             self.pdf_annotation_canvas.resize(self.pdf_container.size())
             self.pdf_annotation_canvas.raise_()
+            QTimer.singleShot(0, self._queue_visible_pdf_pages)
         return super().eventFilter(obj, event)
 
     # ---- pacing progress bar ----
@@ -776,10 +870,11 @@ class LockdownWindow(QWidget):
         scrollbar = self.pdf_scroll.verticalScrollBar()
         viewport_center_y = scrollbar.value() + self.pdf_scroll.viewport().height() // 2
         for i, label in enumerate(self._page_labels):
-            top = label.y()
-            if top <= viewport_center_y < top + label.height():
+            # A center point in the small gap before a page belongs to
+            # that page too, rather than falling through to the last slide.
+            if viewport_center_y < label.y() + label.height():
                 return i
-        return 0 if viewport_center_y < self._page_labels[0].y() else len(self._page_labels) - 1
+        return len(self._page_labels) - 1
 
     def _update_pace(self):
         """Recomputes and redraws the pacing bar: how far into the total
@@ -860,7 +955,7 @@ class LockdownWindow(QWidget):
         push-ups is up, so falling "behind" during a required break from
         reading never gets held against you -- resumes exactly where it
         left off once the challenge clears. Driven by the same monitor
-        signal (see update_frame()'s is_challenge) that already pauses the
+        distraction signal that already pauses the
         study countdown itself via pause_for_distraction() -- one real
         source of truth for "is something disrupting study right now",
         not a second guess at it."""
@@ -965,7 +1060,7 @@ class LockdownWindow(QWidget):
         on ANY failure (extraction or the LLM call), skips straight to
         finishing rather than getting stuck -- the review is a bonus on
         top of finishing early, not a gate blocking it."""
-        if self._material_completed:
+        if self._material_completed or self._session_stopped:
             return
         self._material_completed = True
         self._pace_timer.stop()  # the material's done -- no more pace ticking needed
@@ -984,11 +1079,15 @@ class LockdownWindow(QWidget):
         self._review_worker.start()
 
     def _on_review_ready(self, review):
+        if self._session_stopped:
+            return
         dialog = SessionReviewDialog(review.get("recap", ""), review.get("quiz", []), parent=self)
         dialog.exec()
         self._finish_material_completion()
 
     def _on_review_failed(self, message):
+        if self._session_stopped:
+            return
         print(f"[LockdownWindow] session review failed, skipping straight to exit: {message}")
         self._finish_material_completion()
 
@@ -1000,6 +1099,8 @@ class LockdownWindow(QWidget):
         transition logic is entirely state_machine's own, untouched by
         any of this -- this just triggers it earlier than a natural
         zero would have."""
+        if self._session_stopped:
+            return
         self.deadline_banner.setVisible(False)  # the material's done -- nothing left to warn about
         self.material_completed.emit()
         self._timer_widget.finish_block_early()
@@ -1018,12 +1119,13 @@ class LockdownWindow(QWidget):
                 self.pose_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation
             ))
         self.pose_label.setVisible(is_challenge)
-        self.set_dimmed(is_challenge)
-        self._set_pace_frozen(is_challenge)
+
+    def set_disrupted(self, disrupted):
+        self.set_dimmed(disrupted)
+        self._set_pace_frozen(disrupted)
 
     def set_dimmed(self, dimmed):
-        """Fades the PDF while a pose challenge is up -- you should be
-        looking at the camera to match the pose, not reading."""
+        """Fades the PDF while the distraction monitor has paused study."""
         self._pdf_opacity_effect.setOpacity(DIMMED_OPACITY if dimmed else 1.0)
 
     # ---- going live / standing down ----
@@ -1076,6 +1178,9 @@ class LockdownWindow(QWidget):
             self.companion_status_label.setVisible(False)
 
     def stop_lockdown(self):
+        self._session_stopped = True
+        self._pdf_render_timer.stop()
+        self._pdf_layout_timer.stop()
         self._enforcer.stop()
         self._exit_hotkey.stop()
         self._pace_timer.stop()

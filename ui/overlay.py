@@ -491,6 +491,7 @@ class BreakFlowController(QObject):
         self._active_window = None
         timer_widget.break_choice_needed.connect(self._on_break_choice_needed)
         timer_widget.break_ended.connect(self._on_break_ended)
+        timer_widget.finished.connect(self._close_active)
 
     def _close_active(self):
         if self._active_window is not None:

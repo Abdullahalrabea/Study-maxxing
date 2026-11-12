@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
+import numpy as np
 from mediapipe.tasks.python import BaseOptions
 from mediapipe.tasks.python.vision import HandLandmarker, HandLandmarkerOptions, RunningMode
 
@@ -79,6 +80,13 @@ def resize_keep_aspect(img, max_dim=500):
     return img
 
 
+def _print_status(message):
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        print(message.encode("ascii", errors="backslashreplace").decode("ascii"))
+
+
 def load_image_frames(path, max_dim=500):
     """Return (frames, durations_ms). A static image comes back as a single
     frame; a .gif comes back as all of its frames, correctly composited
@@ -88,17 +96,22 @@ def load_image_frames(path, max_dim=500):
     if path.suffix.lower() == ".gif":
         if not _HAS_PIL:
             raise RuntimeError("Reading .gif pose files needs Pillow: pip install pillow")
-        pil_img = Image.open(path)
         frames, durations = [], []
-        for frame in ImageSequence.Iterator(pil_img):
-            import numpy as np  # local import: only needed for the gif path
-            rgb = np.array(frame.convert("RGB"))
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            frames.append(resize_keep_aspect(bgr, max_dim))
-            durations.append(frame.info.get("duration", 100) or 100)
+        with Image.open(path) as pil_img:
+            for frame in ImageSequence.Iterator(pil_img):
+                rgb = np.array(frame.convert("RGB"))
+                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                frames.append(resize_keep_aspect(bgr, max_dim))
+                durations.append(frame.info.get("duration", 100) or 100)
         return frames, durations
 
-    img = cv2.imread(str(path))
+    # OpenCV's Windows filename handling can reject Unicode paths. Let
+    # Python open the file and give OpenCV its bytes instead.
+    try:
+        encoded = np.frombuffer(path.read_bytes(), dtype=np.uint8)
+        img = cv2.imdecode(encoded, cv2.IMREAD_COLOR) if encoded.size else None
+    except (OSError, cv2.error):
+        return [], []
     if img is None:
         return [], []
     return [resize_keep_aspect(img, max_dim)], [1000]
@@ -225,18 +238,18 @@ class PoseChallenge:
         for path in paths:
             frames, durations = load_image_frames(path)
             if not frames:
-                print(f"Could not read {path.name}, skipping.")
+                _print_status(f"Could not read {path.name}, skipping.")
                 continue
             spec = GESTURES.get(path.name, DEFAULT_GESTURE)
             if path.name not in GESTURES:
-                print(f"{path.name}: no entry in gesture_config.py, using default {DEFAULT_GESTURE}")
+                _print_status(f"{path.name}: no entry in gesture_config.py, using default {DEFAULT_GESTURE}")
             else:
-                print(f"{path.name}: requires {spec}")
+                _print_status(f"{path.name}: requires {spec}")
             self.bank.append(PoseEntry(path.name, frames, durations, spec))
 
         if not self.bank:
             raise RuntimeError(f"None of the files in {self.poses_folder} could be loaded.")
-        print(f"Loaded {len(self.bank)} reference pose(s) from {self.poses_folder}")
+        _print_status(f"Loaded {len(self.bank)} reference pose(s) from {self.poses_folder}")
         return self
 
     def __enter__(self):

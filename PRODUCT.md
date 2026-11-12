@@ -18,7 +18,7 @@ Study Maxxing is a personal, locally-run study-accountability system combining a
 
 What a plain Pomodoro timer, a plain Notion integration, or a plain to-do app couldn't truthfully copy:
 
-- Webcam-enforced accountability with real physical consequences (pose-challenge / push-up penalties) for looking away or using a phone during a session.
+- Webcam-enforced accountability: looking away or using a phone pauses the countdown and dims the slides until the user refocuses. Pose and push-up challenges are temporarily disabled until the user explicitly asks to restore them.
 - A local LLM (via LM Studio) with full non-destructive tool access to the user's actual Notion schedule and to-do data -- the model itself decides what to read or write; it isn't a scripted integration.
 - A true greedy, earliest-deadline-first cross-course scheduler: a day has exactly one study slot and one work slot, competing deadlines are prioritized by urgency regardless of the order plans are generated in, and sessions spread across the whole runway instead of cramming into the final days.
 - "Monitor Lockdown," which unifies the timer, live webcam feed, and today's actual study material (auto-extracted topic summary + the full source PDF) into one enforced full-screen view, with OS-level "soft" enforcement (minimizes other windows, whitelists only Discord/Spotify) -- deliberately stopping short of a keyboard-hook hard-lock for safety.
@@ -29,6 +29,7 @@ What a plain Pomodoro timer, a plain Notion integration, or a plain to-do app co
 - Deeply integrated with the user's real, live Notion workspace: a schedule table (courses as columns; Quiz-1..5, assignments, Project, Major-1, Major-2, Final as rows), a To-Do List page, and a "To Do Date" calendar database -- all real production data the user actively relies on, not a demo/sandbox.
 - Depends on LM Studio running locally with one or more models loaded: a tool-calling-capable model for the Notion chat agent, optionally a vision-capable model for slide/material understanding. No cloud AI dependency.
 - Study material is typically PDF slide decks or notes the user uploads themselves.
+- A persistent per-course material library retains uploads, optional chapter assignments, and selected-file removals. The user can choose between today's sessions and manually confirm completion from Focus or lockdown; completion archives the exact matching Notion calendar entry.
 - Used during real study sessions, including a "Monitor Lockdown" full-screen mode meant to run for the duration of a focus block with the webcam active.
 - Expects Discord and Spotify as the user's normal companion apps during a lockdown session -- launched and tiled automatically on a second monitor when one is present.
 

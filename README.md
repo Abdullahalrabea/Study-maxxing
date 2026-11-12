@@ -19,6 +19,17 @@ It is further reinforced by webcam monitoring to help keep me focused and preven
 
 ## Features
 
+### New in v1.1.1
+
+Persistent course uploads, chapter assignments, selected-file removal,
+same-day session selection, manual completion, and full-document viewing
+without the former 80-slide limit. Startup and distraction-monitor fixes
+are included. See the [full changelog](CHANGELOG.md).
+
+Pose and push-up challenges are temporarily disabled in this release.
+Distraction detection still dims the slides and pauses the countdown until
+you refocus.
+
 **The AI features run entirely on a local LLM** via [LM
 Studio](https://lmstudio.ai/) (an OpenAI-compatible local server) — no
 cloud API key is ever used, nothing you type or upload leaves your
@@ -40,16 +51,18 @@ a property of whatever you point LM Studio at.
   eye-gaze direction, and on-device phone detection to notice when
   you've actually stopped paying attention (not just turned your head to
   glance at notes).
-- **Pose-challenge penalties** — if you are distracted for long, you have to physically
-  match a gif/meme reference pose (expression + gaze + hand gesture,
-  including genuinely requiring *movement* for gif-based challenges, not
-  just landing in the final pose) before you're let back in.
-- **Push-up penalties** — repeated phone violations require real,
-  counted push-ups (calibrated to your own arm length via a held T-pose)
-  before you can resume.
+- **Pause on distraction** — looking away or using a phone for too long
+  dims the material and pauses the countdown. Refocusing resumes study.
+  Pose matching and push-up penalties are retained in the source but
+  temporarily disabled, including prompts for previously owed push-ups.
+- **Full-document viewing** — every slide is accessible, with nearby
+  pages rendered as needed and a dropdown to jump between uploaded files.
+- **Manual completion** — Mark session completed ends the entire session
+  and archives its exact Notion calendar entry. Saving failures are shown
+  with an option to retry.
 - **Pacing "heart bar"** — a Minecraft-style row of hearts showing how far
   along you *should* be versus where you actually are, freezing during
-  penalties so a forced break doesn't count against you.
+  distractions so a pause doesn't count against you.
 - **AI engagement-credit judgment** — every 90 seconds, your recent
   distraction data is judged by the local LLM for a credit multiplier
   applied to your pacing (never to the real countdown), plus optional
@@ -62,6 +75,8 @@ a property of whatever you point LM Studio at.
   deliberate, user-confirmed exception to the anti-distraction design),
   and a **Spotify now-playing widget** with full transport controls —
   all built in.
+
+  Pose challenges from earlier releases (currently disabled):
 
   ![Pose challenge](docs/assets/gifs/pose-challenge.gif)
 
@@ -97,6 +112,12 @@ theme-aware visual style.
   it), **To-Do List** with a separate no-webcam **Passive Tracking**
   stopwatch for non-exam work, a local **Progress dashboard** (with a
   one-click Reset), **Schedule Assistant**, and **Study Planner**.
+- **Course material library** — upload several PDFs, Word documents,
+  text files, or images, assign optional chapter ranges, and remove
+  selected files. Saved copies remain available across restarts and future
+  study days. Export PowerPoint slides as PDF before uploading.
+- **Choose session** — select which of today's sessions to study, including
+  different chapters or start times for the same course.
 
 ### 🤖 AI / Local LLM Features
 Everything below runs through a single local LM Studio connection —
@@ -127,8 +148,9 @@ language across the whole app.
 
 ### 🔐 Accountability
 An encrypted (Windows DPAPI) local debt ledger tracks unfinished study
-time from early-left sessions and any owed push-up penalties, folding
-them into your next session rather than letting them silently vanish.
+time from early-left sessions, folding it into your next session. Old
+push-up debt is preserved, with its challenges and prompts temporarily
+disabled.
 
 
 ## Requirements

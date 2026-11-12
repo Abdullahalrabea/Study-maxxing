@@ -2,15 +2,17 @@
 import os
 import time
 import threading
+from datetime import date
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMessageBox,
-    QPushButton, QLineEdit, QSplitter, QScrollArea, QSpinBox, QDialog, QCheckBox
+    QPushButton, QLineEdit, QSplitter, QScrollArea, QSpinBox, QDialog, QCheckBox, QComboBox, QMenu
 )
-from PyQt6.QtCore import QThread, pyqtSignal, QSettings, QUrl, Qt, QTimer
+from PyQt6.QtCore import QThread, pyqtSignal, QSettings, QUrl, Qt, QTimer, QSignalBlocker
 
 import passive_tracking
 from paths import get_app_data_dir
+from challenge_settings import PHYSICAL_CHALLENGES_ENABLED
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
@@ -251,16 +253,17 @@ class MarkCompletedWorker(QThread):
     done = pyqtSignal(bool)  # whether a matching entry was actually found and archived
     failed = pyqtSignal(str)
 
-    def __init__(self, planner, course, field, on_date):
+    def __init__(self, planner, course, field, on_date, entry_id=None):
         super().__init__()
         self.planner = planner
         self.course = course
         self.field = field
         self.on_date = on_date
+        self.entry_id = entry_id
 
     def run(self):
         try:
-            found = self.planner.mark_session_completed(self.course, self.field, self.on_date)
+            found = self.planner.mark_session_completed(self.course, self.field, self.on_date, entry_id=self.entry_id)
             self.done.emit(found)
         except Exception as e:
             self.failed.emit(str(e))
@@ -363,6 +366,8 @@ class FocusSessionWidget(QWidget):
     -- still watching, just not acting on (or accumulating) anything it
     sees, so there's no restart delay either way."""
 
+    upload_material_requested = pyqtSignal(str)
+
     def __init__(self, notion_token=None, table_block_id=None, calendar_database_id=None, parent=None):
         super().__init__(parent)
         self._thread = None
@@ -395,6 +400,12 @@ class FocusSessionWidget(QWidget):
         self._current_deadline_passed = False   # True if THIS session's course/field deadline has already
                                                  # passed with the material not yet done -- shows a strong,
                                                  # still-escapable warning inside lockdown (see _open_lockdown())
+        self._applied_debt_minutes = 0
+        self._material_day = None
+        self._is_distracted = False
+        self._complete_worker = None
+        self._completion_session = None
+        self._completed_session_keys = set()
 
         self._study_planner = None
         if notion_token and table_block_id and calendar_database_id:
@@ -422,6 +433,37 @@ class FocusSessionWidget(QWidget):
         layout.addWidget(self.penalty_complete_button)
         self._refresh_penalty_banner()
 
+        daily_row = QHBoxLayout()
+        daily_row.addWidget(QLabel("Today's session:"))
+        self.daily_session_combo = QComboBox()
+        self.daily_session_combo.setMinimumContentsLength(12)
+        self.daily_session_combo.currentIndexChanged.connect(self._on_daily_session_changed)
+        daily_row.addWidget(self.daily_session_combo, 1)
+        self.refresh_material_button = QPushButton("Refresh")
+        self.refresh_material_button.clicked.connect(lambda: self._refresh_todays_material_and_debt())
+        daily_row.addWidget(self.refresh_material_button)
+        layout.addLayout(daily_row)
+        self.choose_session_button = QPushButton("Choose session...")
+        self.choose_session_button.clicked.connect(self._choose_session)
+        layout.addWidget(self.choose_session_button)
+        self.complete_session_button = QPushButton("Mark session completed")
+        self.complete_session_button.setToolTip("Finish the selected session and remove its completed entry from the Notion calendar.")
+        self.complete_session_button.clicked.connect(self._on_manual_session_completed)
+        layout.addWidget(self.complete_session_button)
+        self.completion_status_label = QLabel("")
+        self.completion_status_label.setWordWrap(True)
+        layout.addWidget(self.completion_status_label)
+        self.material_status_label = QLabel("")
+        self.material_status_label.setWordWrap(True)
+        layout.addWidget(self.material_status_label)
+        self.upload_material_button = QPushButton("Upload course material...")
+        self.upload_material_button.clicked.connect(
+            lambda: self.upload_material_requested.emit(
+                (self.daily_session_combo.currentData() or {}).get("course", "")
+            )
+        )
+        layout.addWidget(self.upload_material_button)
+
         # Total study time needed, split automatically into blocks capped
         # at STUDY_BLOCK_MAX_SECONDS with a mandatory break between each
         # consecutive pair (see state_machine.make_study_blocks()) -- e.g.
@@ -441,6 +483,8 @@ class FocusSessionWidget(QWidget):
         layout.addLayout(total_minutes_row)
 
         self.timer_widget = StudyTimerWidget()
+        self.timer_widget.start_button.clicked.disconnect(self.timer_widget.start_clicked)
+        self.timer_widget.start_button.clicked.connect(self._start_focus_session)
         self.timer_widget.set_total_minutes(self.total_minutes_spin.value())
         # The big timer readout stays tucked away behind a small "hover to
         # show timer" hint until hovered (see theme.HoverRevealPanel) --
@@ -493,40 +537,231 @@ class FocusSessionWidget(QWidget):
                                               # looking up "today's material" below, so a same-day rollover
                                               # (a debt from a day that just passed) is already reflected
             self._refresh_todays_material_and_debt()
+        else:
+            self.daily_session_combo.addItem("No calendar connected", None)
+            self.material_status_label.setText("Use Upload course material to save your slides and notes.")
+        self._day_timer = QTimer(self)
+        self._day_timer.timeout.connect(self._check_material_day)
+        self._day_timer.start(60000)
+        self._update_completion_controls()
+
+    def _completion_target(self):
+        if self.timer_widget.phase == "not_started":
+            return self.daily_session_combo.currentData()
+        return self._current_session_scheduled
+
+    def _update_completion_controls(self):
+        busy = self._complete_worker is not None
+        phase = self.timer_widget.phase
+        session = self._completion_target()
+        active = phase in {"study", "awaiting_break", "break"}
+        available = active or bool(session and self._session_key(session) not in self._completed_session_keys)
+        self.complete_session_button.setEnabled(not busy and phase != "loading" and available)
+        self.complete_session_button.setText("Saving completion..." if busy else "Mark session completed")
+        self.choose_session_button.setEnabled(not busy and self._thread is None and phase in {"not_started", "done"})
+        self.daily_session_combo.setEnabled(not busy and phase == "not_started")
+        self.refresh_material_button.setEnabled(not busy and phase == "not_started")
+        if phase == "not_started":
+            self.timer_widget.start_button.setEnabled(not busy and self._thread is None)
+        if self._lockdown is not None:
+            self._lockdown.complete_session_button.setEnabled(not busy)
+
+    def _on_manual_session_completed(self):
+        if self._complete_worker is not None or self.timer_widget.phase == "loading":
+            return
+        session = self._completion_target()
+        active = self.timer_widget.phase in {"study", "awaiting_break", "break"}
+        if not active and not session:
+            return
+        if active:
+            self.timer_widget.complete_session()
+        if session is not None and self._study_planner is not None:
+            self._mark_calendar_session_completed(session)
+        else:
+            self.completion_status_label.setText("Session completed.")
+        self._update_completion_controls()
 
     def _refresh_todays_material_and_debt(self):
-        """Looks up today's scheduled material once and, if there's
-        outstanding debt for that course/field (see session_snapshot.py
-        -- unfinished study time from an earlier early-leave), bumps
-        total_minutes_spin up by the owed amount right away. The debt
-        itself isn't cleared here -- only once _begin_lockdown_flow()
-        actually commits to running that session, in case the user never
-        starts it and the debt would otherwise be lost unpaid."""
+        """Refresh the selected day's schedule after uploads, planning, or midnight."""
+        if self.timer_widget.phase != "not_started" or self._study_planner is None:
+            return False
+        previous = self.daily_session_combo.currentData() or {}
         try:
-            from study_planner_panel import find_todays_material
-            pdf_path, topics, session = find_todays_material(self._study_planner)
-        except Exception:
-            pdf_path, topics, session = None, [], None
-        self._todays_material = (pdf_path, topics, session)
+            sessions = [session for session in self._study_planner.todays_sessions(today=date.today())
+                        if self._session_key(session) not in self._completed_session_keys]
+        except Exception as error:
+            self.material_status_label.setText(f"Couldn't refresh today's schedule: {error}")
+            return False
+        with QSignalBlocker(self.daily_session_combo):
+            self.daily_session_combo.clear()
+            for session in sessions:
+                self.daily_session_combo.addItem(
+                    self._session_text(session), session
+                )
+            if not sessions:
+                self.daily_session_combo.addItem("No study sessions scheduled for today", None)
+            for index, session in enumerate(sessions):
+                if self._session_key(session) == self._session_key(previous):
+                    self.daily_session_combo.setCurrentIndex(index)
+                    break
+        self._material_day = date.today()
+        self._on_daily_session_changed()
+        return True
 
-        if session is None:
+    @staticmethod
+    def _session_key(session):
+        if session.get("calendar_entry_id"):
+            return (session["calendar_entry_id"],)
+        return (session.get("course"), session.get("field"), session.get("label"),
+                session.get("calendar_date"), session.get("session_date"))
+
+    @staticmethod
+    def _session_text(session):
+        text = session.get("label") or f"{session['course']} {session['field']}"
+        timestamp = session.get("calendar_date") or ""
+        if "T" in timestamp:
+            text += f" ({timestamp[11:16]})"
+        return text
+
+    def _prepare_next_session(self):
+        if self._complete_worker is not None:
+            return False
+        if self.timer_widget.phase == "not_started":
+            return self._thread is None
+        if self.timer_widget.phase != "done" or self._thread is not None:
+            return False
+        base_minutes = max(10, self.total_minutes_spin.value() - self._applied_debt_minutes)
+        self._applied_debt_minutes = 0
+        self.timer_widget.reset_for_new_session(base_minutes)
+        self._layout.removeWidget(self.timer_widget)
+        self._layout.insertWidget(self._layout.indexOf(self.monitor_status_label), self.timer_widget)
+        self.total_minutes_spin.setEnabled(True)
+        self.total_minutes_spin.setValue(base_minutes)
+        self.daily_session_combo.setEnabled(True)
+        self.refresh_material_button.setEnabled(True)
+        self._break_event.clear()
+        self._lockdown_paused_event.clear()
+        self._reset_flag.consume()
+        self._current_session_scheduled = None
+        self._current_deadline_passed = False
+        self._last_pdf_path = None
+        self._forced_pdf_path = None
+        self._forced_total_slides = 0
+        self._current_total_slides = 0
+        self._is_distracted = False
+        self._update_completion_controls()
+        return True
+
+    def _choose_session(self):
+        if not self._prepare_next_session():
             return
+        if not self._refresh_todays_material_and_debt():
+            if self._study_planner is None:
+                self.material_status_label.setText("Connect your Notion calendar in Settings to choose a scheduled session.")
+            return
+        if hasattr(self, "_session_menu"):
+            self._session_menu.close()
+            self._session_menu.deleteLater()
+        self._session_menu = QMenu(self)
+        self._session_menu.addSection("Today's sessions")
+        current_key = self._session_key(self.daily_session_combo.currentData() or {})
+        for index in range(self.daily_session_combo.count()):
+            session = self.daily_session_combo.itemData(index)
+            if session is None:
+                continue
+            key = self._session_key(session)
+            action = self._session_menu.addAction(self._session_text(session))
+            action.setCheckable(True)
+            action.setChecked(key == current_key)
+            action.triggered.connect(lambda _checked=False, selected=key: self._select_session(selected))
+        if len(self._session_menu.actions()) == 1:
+            self._session_menu.addAction("No sessions scheduled for today").setEnabled(False)
+        self._session_menu.popup(self.choose_session_button.mapToGlobal(self.choose_session_button.rect().bottomLeft()))
+
+    def _select_session(self, selected_key):
+        if self.timer_widget.phase != "not_started":
+            return
+        for index in range(self.daily_session_combo.count()):
+            session = self.daily_session_combo.itemData(index)
+            if session is not None and self._session_key(session) == selected_key:
+                self.daily_session_combo.setCurrentIndex(index)
+                if hasattr(self, "_session_menu"):
+                    self._session_menu.close()
+                return
+        self.material_status_label.setText("This session changed in Notion. Choose a session again.")
+
+    def _on_daily_session_changed(self):
+        self._update_completion_controls()
+        if self.timer_widget.phase != "not_started":
+            return
+        session = self.daily_session_combo.currentData()
+        pdf_path, topics = None, []
+        try:
+            if session:
+                from study_planner_panel import find_todays_material
+                pdf_path, topics, session = find_todays_material(self._study_planner, session=session)
+        except Exception as error:
+            self.material_status_label.setText(f"Couldn't load this course's material: {error}")
+            self._todays_material = (None, [], session)
+            return
+        self._todays_material = (pdf_path, topics, session)
+        base_minutes = max(10, self.total_minutes_spin.value() - self._applied_debt_minutes)
+        self._applied_debt_minutes = 0
         import session_snapshot
-        debt = session_snapshot.load_debt(session["course"], session["field"])
-        if debt is None:
+        debt = session_snapshot.load_debt(session["course"], session["field"]) if session else None
+        if debt:
+            self._applied_debt_minutes = max(1, round(debt["shortfall_seconds"] / 60))
+        self.total_minutes_spin.setValue(base_minutes + self._applied_debt_minutes)
+        if session:
+            paths = session.get("material_paths", [])
+            from pathlib import Path
+            label = self._session_text(session)
+            self.daily_session_combo.setToolTip(label)
+            self.choose_session_button.setToolTip(label)
+            text = label + "\n" + (", ".join(Path(path).name for path in paths)
+                                    if paths else "Upload material for this session.")
+            if session.get("missing_material"):
+                text += "\nUpload these earlier files again: " + ", ".join(session["missing_material"])
+            if self._applied_debt_minutes:
+                text += f"\nIncludes {self._applied_debt_minutes} min carried over from this course."
+            self.material_status_label.setText(text)
+        else:
+            if any(self.daily_session_combo.itemData(i) for i in range(self.daily_session_combo.count())):
+                self.material_status_label.setText("Choose a session above to study or mark it completed.")
+            else:
+                self.material_status_label.setText("No calendar session for today. Your course uploads are kept for their scheduled days.")
+
+    def _check_material_day(self):
+        if self.timer_widget.phase == "not_started" and self._material_day != date.today():
+            self._refresh_todays_material_and_debt()
+
+    def _start_focus_session(self):
+        if self._complete_worker is not None:
             return
-        owed_minutes = max(1, round(debt["shortfall_seconds"] / 60))
-        self.total_minutes_spin.setValue(self.total_minutes_spin.value() + owed_minutes)
-        self.monitor_status_label.setText(
-            f"+{owed_minutes} min added to today's session -- carried over from an unfinished "
-            f"{session['course']} {session['field']} session ({debt['completion_pct']}% done last time)."
-        )
+        if self.timer_widget.phase == "not_started" and self._thread is not None:
+            return
+        if self.timer_widget.phase == "not_started" and self._study_planner is not None:
+            previous = self.daily_session_combo.currentData()
+            if not self._refresh_todays_material_and_debt():
+                return
+            if previous is not None and self._session_key(previous) != self._session_key(self.daily_session_combo.currentData() or {}):
+                self.material_status_label.setText("The selected session changed in Notion. Choose a session again before starting.")
+                return
+            pdf_path, _, session = self._todays_material
+            if session is not None and not pdf_path:
+                self.material_status_label.setText(f"Upload material for {session['course']} before starting this session.")
+                return
+        self.timer_widget.start_clicked()
 
     def _refresh_penalty_banner(self):
         """Shows/hides the soft push-ups-owed nudge based on whatever
         session_snapshot currently has on record -- called once at
         startup, and again right after PenaltyCompletionDialog closes
         (whether it actually finished the reps or was just dismissed)."""
+        if not PHYSICAL_CHALLENGES_ENABLED:
+            self.penalty_banner.hide()
+            self.penalty_complete_button.hide()
+            return
         import session_snapshot
         penalty = session_snapshot.load_penalty()
         if penalty is None:
@@ -541,6 +776,8 @@ class FocusSessionWidget(QWidget):
         self.penalty_complete_button.setVisible(True)
 
     def _on_penalty_complete_clicked(self):
+        if not PHYSICAL_CHALLENGES_ENABLED:
+            return
         import session_snapshot
         penalty = session_snapshot.load_penalty()
         if penalty is None:
@@ -597,7 +834,7 @@ class FocusSessionWidget(QWidget):
         falling back to the PDF's raw page count. Only valid before any
         session has started; a no-op otherwise, same as every other
         pre-session setter here (set_total_minutes(), etc.)."""
-        if self.timer_widget.phase != "not_started":
+        if self.timer_widget.phase != "not_started" or self._complete_worker is not None:
             return
         self._forced_pdf_path = pdf_path
         self._forced_total_slides = total_slides
@@ -606,6 +843,10 @@ class FocusSessionWidget(QWidget):
         self.timer_widget.start_clicked()
 
     def _on_session_starting(self):
+        self._is_distracted = False
+        self.choose_session_button.setEnabled(False)
+        self.daily_session_combo.setEnabled(False)
+        self.refresh_material_button.setEnabled(False)
         self.total_minutes_spin.setEnabled(False)  # the block sequence is locked in once a session actually starts
         self.monitor_status_label.setText("Distraction monitor: loading webcam and models...")
         self._thread = VisionMonitorThread(
@@ -616,9 +857,10 @@ class FocusSessionWidget(QWidget):
         self._thread.disruption_changed.connect(self._on_disruption_changed)
         self._thread.penalty_pending_changed.connect(self._on_penalty_pending_changed)
         self._thread.failed.connect(self._on_monitor_failed)
-        self._thread.stopped.connect(self._on_monitor_stopped)
+        self._thread.finished.connect(self._on_monitor_stopped)
         self._thread.frame_ready.connect(self._on_frame_ready)
         self._thread.start()
+        self._update_completion_controls()
 
     def _on_monitor_ready(self):
         self.monitor_status_label.setText("Distraction monitor: watching...")
@@ -637,11 +879,8 @@ class FocusSessionWidget(QWidget):
             self._forced_total_slides = 0
             self._current_session_scheduled = None  # a Revision/forced session isn't on the calendar
         else:
-            # Reuses the SAME lookup _refresh_todays_material_and_debt()
-            # already did at construction time (that's what any debt-
-            # adjusted total_minutes_spin bump was computed against) --
-            # not looked up fresh here, so the material actually used
-            # matches whatever the debt-folding logic saw.
+            # Start refreshes this selection before the timer enters loading,
+            # so uploads and a new calendar day are reflected immediately.
             pdf_path, topics, session = self._todays_material
             self._current_total_slides = 0  # no explicit slide count for an auto-picked session -- LockdownWindow
                                              # falls back to the PDF's real page count
@@ -704,10 +943,16 @@ class FocusSessionWidget(QWidget):
         self._lockdown = LockdownWindow(
             pdf_path, self.timer_widget, total_slides=self._current_total_slides,
             deadline_passed=self._current_deadline_passed,
+            session_label=(self._current_session_scheduled or {}).get("label", ""),
         )
         self._lockdown.exit_requested.connect(self._close_lockdown)
+        self._lockdown.completion_requested.connect(self._on_manual_session_completed)
         self._lockdown.material_completed.connect(self._on_material_completed)
+        self._lockdown.set_disrupted(self._is_distracted)
+        if self._is_distracted:
+            self.timer_widget.pause_for_distraction()
         self._lockdown.start_lockdown()
+        self._update_completion_controls()
 
     def _on_material_completed(self):
         """Fires once LockdownWindow's own 100%-completion review flow
@@ -719,22 +964,65 @@ class FocusSessionWidget(QWidget):
         ran), there's nothing left for a failure to meaningfully block."""
         if self._current_session_scheduled is None or self._study_planner is None:
             return
+        self._mark_calendar_session_completed(self._current_session_scheduled)
+
+    def _mark_calendar_session_completed(self, session):
+        if self._complete_worker is not None or self._session_key(session) in self._completed_session_keys:
+            return
         from datetime import date as date_cls
-        course = self._current_session_scheduled["course"]
-        field = self._current_session_scheduled["field"]
-        self._complete_worker = MarkCompletedWorker(self._study_planner, course, field, date_cls.today())
+        timestamp = session.get("calendar_date") or session.get("session_date")
+        on_date = date_cls.fromisoformat(str(timestamp)[:10]) if timestamp else date.today()
+        self._completion_session = dict(session)
+        self._complete_worker = MarkCompletedWorker(
+            self._study_planner, session["course"], session["field"], on_date,
+            entry_id=session.get("calendar_entry_id"),
+        )
         self._complete_worker.done.connect(self._on_mark_completed_done)
         self._complete_worker.failed.connect(self._on_mark_completed_failed)
+        self._complete_worker.finished.connect(self._on_completion_worker_finished)
+        self.completion_status_label.setText(f"Saving completion to Notion: {self._session_text(session)}")
+        self._update_completion_controls()
         self._complete_worker.start()
 
     def _on_mark_completed_done(self, found):
         if found:
-            print("[FocusSessionWidget] marked today's Notion task complete")
+            session = self._completion_session
+            key = self._session_key(session)
+            self._completed_session_keys.add(key)
+            import session_snapshot
+            session_snapshot.clear_debt(session["course"], session["field"])
+            with QSignalBlocker(self.daily_session_combo):
+                selected = self.daily_session_combo.currentData()
+                selected_completed = selected and self._session_key(selected) == key
+                for index in reversed(range(self.daily_session_combo.count())):
+                    item = self.daily_session_combo.itemData(index)
+                    if item and self._session_key(item) == key:
+                        self.daily_session_combo.removeItem(index)
+                if self.daily_session_combo.count() == 0:
+                    self.daily_session_combo.addItem("No study sessions scheduled for today", None)
+                elif selected_completed:
+                    # Require a new selection before another completion click
+                    # can affect a different session (including double-clicks).
+                    self.daily_session_combo.setCurrentIndex(-1)
+            self._on_daily_session_changed()
+            self.completion_status_label.setText(f"Completed in Notion: {self._session_text(session)}")
         else:
-            print("[FocusSessionWidget] no matching Notion calendar entry found to mark complete (already handled?)")
+            self.completion_status_label.setText(
+                "The session wasn't found in Notion. It may have changed or already been completed. Refresh the schedule to check."
+            )
 
     def _on_mark_completed_failed(self, message):
-        print(f"[FocusSessionWidget] couldn't mark the Notion task complete: {message}")
+        self.completion_status_label.setText(
+            f"Couldn't save completion to Notion: {message}\nClick Mark session completed to retry."
+        )
+
+    def _on_completion_worker_finished(self):
+        worker = self._complete_worker
+        self._complete_worker = None
+        self._completion_session = None
+        if worker is not None:
+            worker.deleteLater()
+        self._update_completion_controls()
 
     def _on_frame_ready(self, main_frame, pose_frame):
         if self._lockdown is not None:
@@ -820,10 +1108,13 @@ class FocusSessionWidget(QWidget):
         self._open_lockdown(self._last_pdf_path)
 
     def _on_disruption_changed(self, is_disruptive):
+        self._is_distracted = is_disruptive
+        if self._lockdown is not None:
+            self._lockdown.set_disrupted(is_disruptive)
         if is_disruptive:
             self.timer_widget.pause_for_distraction()
             self.monitor_status_label.setText(
-                "Distraction monitor: paused -- clear the pose challenge / push-ups!"
+                "Distraction monitor: study paused while distracted."
             )
         else:
             self.timer_widget.resume_after_distraction()
@@ -853,16 +1144,25 @@ class FocusSessionWidget(QWidget):
         self._close_lockdown(offer_resume=False)
         if self._thread is not None:
             self._thread.request_stop()
+        else:
+            self.choose_session_button.setEnabled(True)
+        self._update_completion_controls()
 
     def _on_monitor_failed(self, message):
         self._close_lockdown(offer_resume=False)
         QMessageBox.warning(self, "Distraction monitor error", message)
         self.timer_widget.cancel_loading()
+        if self.timer_widget.phase == "not_started":
+            self.daily_session_combo.setEnabled(True)
+            self.refresh_material_button.setEnabled(True)
+        self._update_completion_controls()
 
     def _on_monitor_stopped(self):
         self._close_lockdown(offer_resume=False)
         self.monitor_status_label.setText("Distraction monitor: not running.")
         self._thread = None
+        self.choose_session_button.setEnabled(self.timer_widget.phase in {"not_started", "done"})
+        self._update_completion_controls()
 
 
 class AddTodoWorker(QThread):
@@ -1194,6 +1494,7 @@ class MainWindow(QMainWindow):
         header = HeaderBanner()
         header.settings_requested.connect(self._open_settings)
         header.games_requested.connect(lambda: self._open_game_picker(header.games_button))
+        header.materials_requested.connect(self._open_material_library)
         central_layout.addWidget(header, 0)
 
         splitter = _themed_splitter(Qt.Orientation.Horizontal)
@@ -1236,6 +1537,7 @@ class MainWindow(QMainWindow):
             notion_token=notion_token, table_block_id=table_block_id, calendar_database_id=calendar_database_id
         )
         self._focus_widget = focus_widget  # closeEvent() reaches back in to persist any owed penalty debt
+        focus_widget.upload_material_requested.connect(self._open_material_library)
         pages_splitter.addWidget(
             CollapsibleSection("Focus Session", focus_widget, help_text=FOCUS_SESSION_HELP_TEXT)
         )
@@ -1271,11 +1573,15 @@ class MainWindow(QMainWindow):
             CollapsibleSection("Schedule Assistant", schedule_widget, help_text=EXAM_FORM_HELP_TEXT)
         )
 
+        self._planner_panel = None
         if notion_token and table_block_id and calendar_database_id:
             planner_widget = StudyPlannerPanel(
                 notion_token=notion_token, table_block_id=table_block_id,
                 calendar_database_id=calendar_database_id,
             )
+            self._planner_panel = planner_widget
+            planner_widget.materials_changed.connect(lambda _course: focus_widget._refresh_todays_material_and_debt())
+            planner_widget.plan_committed.connect(focus_widget._refresh_todays_material_and_debt)
         else:
             planner_widget = _missing_config_notice(
                 "Study Planner needs the NOTION_TOKEN, NOTION_TABLE_BLOCK_ID, and "
@@ -1309,6 +1615,19 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([460, 940])  # pages panel starts narrower -- it doesn't need as much room as Notion
 
+    def _open_material_library(self, current_course=""):
+        from material_library_dialog import MaterialLibraryDialog
+        courses = [exam["course"] for exam in self._planner_panel.exams] if self._planner_panel else []
+        dialog = MaterialLibraryDialog(courses=courses, current_course=current_course, parent=self)
+        dialog.materials_changed.connect(self._on_materials_changed)
+        dialog.exec()
+
+    def _on_materials_changed(self, course):
+        if self._planner_panel:
+            self._planner_panel.on_library_changed(course)
+        else:
+            self._focus_widget._refresh_todays_material_and_debt()
+
     def _open_settings(self):
         current_lm_studio_url = self._app_settings.value(KEY_LM_STUDIO_URL) or None
         dialog = SettingsDialog(
@@ -1332,5 +1651,10 @@ class MainWindow(QMainWindow):
         # If the app closes while push-ups are actively owed (not just a
         # mid-session lockdown exit, which _close_lockdown() already
         # covers), that debt still needs to persist for next launch.
+        worker = self._focus_widget._complete_worker
+        if worker is not None and worker.isRunning():
+            worker.finished.connect(self.close)
+            event.ignore()
+            return
         self._focus_widget._persist_penalty_if_owed()
         super().closeEvent(event)

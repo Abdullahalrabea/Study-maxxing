@@ -40,6 +40,7 @@
 # you want a different number of push-ups).
 
 import time
+from contextlib import nullcontext
 
 import cv2
 import numpy as np
@@ -61,6 +62,7 @@ from pushup_counter import PushupCounter, TPOSE_HOLD_SEC
 from eye_tracker import get_gaze_direction
 from expression_classifier import classify_expression
 from paths import get_resource_dir
+from challenge_settings import PHYSICAL_CHALLENGES_ENABLED as POSE_CHALLENGES_ENABLED
 
 SCRIPT_DIR = get_resource_dir("vision")
 MODEL_PATH = SCRIPT_DIR / "face_landmarker.task"
@@ -187,17 +189,24 @@ def main(should_stop=None, on_disruption_change=None, on_ready=None, is_suppress
     continuing. Used for a standalone "pay off what you owe from last
     time" flow (see main_window.py's PenaltyCompletionDialog) that isn't a
     real study session at all, just settling a persisted penalty debt."""
-    for path, label in ((MODEL_PATH, "face"), (HAND_MODEL_PATH, "hand"),
-                        (PHONE_MODEL_PATH, "phone"), (PUSHUP_MODEL_PATH, "pushup pose")):
+    if initial_pushups_owed > 0 and not POSE_CHALLENGES_ENABLED:
+        raise RuntimeError("Push-up challenges are temporarily disabled.")
+    pushups_enabled = POSE_CHALLENGES_ENABLED
+    required_models = [(MODEL_PATH, "face"), (PHONE_MODEL_PATH, "phone")]
+    if POSE_CHALLENGES_ENABLED:
+        required_models.append((HAND_MODEL_PATH, "hand"))
+    if pushups_enabled:
+        required_models.append((PUSHUP_MODEL_PATH, "pushup pose"))
+    for path, label in required_models:
         if not path.exists():
             raise FileNotFoundError(
                 f"{label.capitalize()} model bundle not found at {path}\n"
                 "See the setup instructions in the comment at the top of this file."
             )
 
-    pose_challenge = PoseChallenge(HAND_MODEL_PATH, POSES_FOLDER).load_bank()
+    pose_challenge = PoseChallenge(HAND_MODEL_PATH, POSES_FOLDER).load_bank() if POSE_CHALLENGES_ENABLED else None
     phone_detector = PhoneDetector(PHONE_MODEL_PATH)
-    pushup_counter = PushupCounter(PUSHUP_MODEL_PATH)
+    pushup_counter = PushupCounter(PUSHUP_MODEL_PATH) if pushups_enabled else None
 
     face_options = FaceLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
@@ -234,7 +243,8 @@ def main(should_stop=None, on_disruption_change=None, on_ready=None, is_suppress
         pushup_counter.reset()
 
     with FaceLandmarker.create_from_options(face_options) as face_landmarker, \
-         pose_challenge, phone_detector, pushup_counter:
+         (pose_challenge if pose_challenge is not None else nullcontext()), phone_detector, \
+         (pushup_counter if pushup_counter is not None else nullcontext()):
         print("Vision Engine Active. Face your camera! Press 'q' to quit.")
 
         while True:
@@ -259,12 +269,6 @@ def main(should_stop=None, on_disruption_change=None, on_ready=None, is_suppress
             timestamp_ms = int((time.time() - start_time) * 1000)
             now = time.time()
             pose_frame = None  # set below only while a pose challenge is actively being shown
-
-            is_disruptive = state in DISRUPTIVE_STATES
-            if is_disruptive != last_disruptive:
-                last_disruptive = is_disruptive
-                if on_disruption_change is not None:
-                    on_disruption_change(is_disruptive)
 
             # A penalty is "pending" (owed, not yet paid off) from the
             # moment a violation triggers it (pushups_pending, still in
@@ -409,20 +413,26 @@ def main(should_stop=None, on_disruption_change=None, on_ready=None, is_suppress
                         y += 25
 
                     if away_elapsed > LOOK_AWAY_TIMEOUT_SEC:
-                        pose_challenge.pick_random_challenge()
-                        state = "CHALLENGE"
+                        if POSE_CHALLENGES_ENABLED:
+                            pose_challenge.pick_random_challenge()
+                            state = "CHALLENGE"
+                        else:
+                            state = "RECENTER"
+                            recenter_since = None
                         match_since = None
                         away_since = None
                         phone_since = None
                     elif phone_elapsed > PHONE_HOLD_TIMEOUT_SEC:
-                        phone_violation_count += 1
-                        pushups_pending = (phone_violation_count % PHONE_VIOLATIONS_BEFORE_PUSHUPS == 0)
-                        if pushups_pending:
-                            pushups_required = PUSHUP_COUNT  # a fresh violation always owes the STANDARD
-                                                              # count, even if this run started by paying off
-                                                              # a differently-sized owed debt from last time
-                        pose_challenge.pick_random_challenge()
-                        state = "CHALLENGE"
+                        if POSE_CHALLENGES_ENABLED:
+                            phone_violation_count += 1
+                            pushups_pending = (phone_violation_count % PHONE_VIOLATIONS_BEFORE_PUSHUPS == 0)
+                            if pushups_pending:
+                                pushups_required = PUSHUP_COUNT
+                            pose_challenge.pick_random_challenge()
+                            state = "CHALLENGE"
+                        else:
+                            state = "RECENTER"
+                            recenter_since = None
                         match_since = None
                         away_since = None
                         phone_since = None
@@ -544,7 +554,7 @@ def main(should_stop=None, on_disruption_change=None, on_ready=None, is_suppress
                     y += 25
                     recenter_since = None
                 elif not turned_away:
-                    cv2.putText(frame, "Nice! Now center your face to continue", (10, y),
+                    cv2.putText(frame, "Face the screen to continue", (10, y),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
                     y += 30
                     if recenter_since is None:
@@ -554,10 +564,16 @@ def main(should_stop=None, on_disruption_change=None, on_ready=None, is_suppress
                         away_since = None
                         phone_since = None
                 else:
-                    cv2.putText(frame, "Nice! Now center your face to continue", (10, y),
+                    cv2.putText(frame, "Face the screen to continue", (10, y),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
                     y += 30
                     recenter_since = None
+
+            is_disruptive = state in DISRUPTIVE_STATES
+            if is_disruptive != last_disruptive:
+                last_disruptive = is_disruptive
+                if on_disruption_change is not None:
+                    on_disruption_change(is_disruptive)
 
             if on_frame is not None:
                 on_frame(frame, pose_frame)

@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QComboBox, QSpinBox,
     QPushButton, QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit
 )
-from PyQt6.QtCore import QThread, pyqtSignal, QSettings
+from PyQt6.QtCore import QThread, pyqtSignal, QSettings, QSignalBlocker
 
 from study_planner import StudyPlanner, StudyPlannerError, WORK_FIELD_LABELS
 from llm_client import LLMClientError
@@ -30,6 +30,7 @@ from syllabus_parser import SyllabusParseError
 from notion_table_client import NotionTableError
 from notion_client import NotionClientError
 from theme import Card
+from material_library import MaterialLibrary, MaterialError
 
 PLANNER_ERRORS = (StudyPlannerError, LLMClientError, SyllabusParseError, NotionTableError, NotionClientError)
 
@@ -63,37 +64,31 @@ def _stored_material_paths(stored):
     return [legacy] if legacy else []
 
 
-def find_todays_material(planner, today=None):
-    """Looks up what's scheduled for today (StudyPlanner.todays_sessions())
-    and returns (pdf_path, topics, session) from whatever was last saved
-    for that course/field's plan: pdf_path is the first attached PDF
-    remembered (or None), topics is the topic list computed WHEN THE PLAN
-    WAS GENERATED (see StudyPlanner.generate_plan()'s "topics" field) --
-    i.e. already done ahead of time, not something Monitor Lockdown has to
-    wait on. topics is [] if none was ever computed (an older plan from
-    before this existed, or extraction failed at generation time -- the
-    topic preview falls back to live extraction in that case). session is
-    the matched {"course", "field", "date_text", "date"} dict (see
-    StudyPlanner.todays_sessions()) -- e.g. for a mid-session snapshot to
-    record WHICH scheduled item this was (see core/session_snapshot.py).
-    Returns (None, [], None) if there's no session today or nothing was
-    ever saved for it."""
+def find_todays_material(planner, today=None, session=None, library=None):
+    """Resolve the selected day's course and chapter files, never another course."""
     settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
-    for session in planner.todays_sessions(today=today):
-        raw = settings.value(_config_key(session["course"], session["field"]))
-        if not raw:
-            continue
-        try:
-            stored = json.loads(raw)
-        except (TypeError, ValueError):
-            continue
-        pdf_path = next(
-            (p for p in _stored_material_paths(stored) if p and p.lower().endswith(".pdf")), None
-        )
-        topics = stored.get("topics") or []
-        if pdf_path or topics:
-            return pdf_path, topics, session
-    return None, [], None
+    library = library or MaterialLibrary()
+    if session is None:
+        sessions = planner.todays_sessions(today=today)
+        if not sessions:
+            return None, [], None
+        session = sessions[0]
+    try:
+        stored = json.loads(settings.value(_config_key(session["course"], session["field"])) or "{}")
+        if not isinstance(stored, dict):
+            stored = {}
+    except (TypeError, ValueError):
+        stored = {}
+    paths, missing = library.resolve(session["course"], _stored_material_paths(stored),
+                                     chapter_range=session.get("chapter_range"))
+    resolved = {**session, "material_paths": paths, "missing_material": missing}
+    pdf_path = library.prepare_pdf(session["course"], paths)
+    removed_names = {item["name"].casefold() for item in library.materials(session["course"], include_removed=True)
+                     if item.get("removed")}
+    includes_removed = any(Path(path).name.casefold() in removed_names
+                           for path in _stored_material_paths(stored))
+    topics = [] if includes_removed else stored.get("topics") or []
+    return pdf_path, topics, resolved
 
 
 class ListExamsWorker(QThread):
@@ -160,6 +155,9 @@ class CommitPlanWorker(QThread):
 
 
 class StudyPlannerPanel(QWidget):
+    materials_changed = pyqtSignal(str)
+    plan_committed = pyqtSignal()
+
     def __init__(self, notion_token, table_block_id, calendar_database_id, parent=None):
         super().__init__(parent)
         self.planner = StudyPlanner(notion_token, table_block_id, calendar_database_id)
@@ -167,6 +165,11 @@ class StudyPlannerPanel(QWidget):
         self.current_plan = None  # last generate_plan() result
         self.material_paths = []  # list of attached file paths, combined into one document
         self._worker = None
+        self._active_workers = set()
+        self._busy = False
+        self.material_library = MaterialLibrary()
+        self._selected_deadline = None
+        self._restoring_config = False
         self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self._build_ui()
         self._reload_exams()
@@ -178,7 +181,8 @@ class StudyPlannerPanel(QWidget):
         if not raw:
             return None
         try:
-            return json.loads(raw)
+            stored = json.loads(raw)
+            return stored if isinstance(stored, dict) else None
         except (TypeError, ValueError):
             return None
 
@@ -192,6 +196,29 @@ class StudyPlannerPanel(QWidget):
             "topics": plan.get("topics", []),
         }
         self._settings.setValue(_config_key(plan["course"], plan["field"]), json.dumps(data))
+
+    def _save_draft(self, *_):
+        if self._restoring_config or self._selected_deadline is None:
+            return
+        course, field = self._selected_deadline
+        data = self._load_stored_config(course, field) or {}
+        if [Path(path).name.casefold() for path in _stored_material_paths(data)] != [
+                Path(path).name.casefold() for path in self.material_paths]:
+            data["topics"] = []
+        data.update(chapter_count=self.chapter_spin.value(), description=self.description_edit.text(),
+                    material_paths=list(self.material_paths), daily_minutes=self.daily_minutes_spin.value())
+        self._settings.setValue(_config_key(course, field), json.dumps(data))
+
+    def on_library_changed(self, course):
+        if self.course_combo.currentText() == course and not self._busy:
+            paths, missing = self.material_library.resolve(course, self.material_paths)
+            self.material_paths = paths + [path for path in self.material_paths if Path(path).name in missing]
+            self._update_material_label()
+            self._save_draft()
+            self.current_plan = None
+            self.commit_button.setEnabled(False)
+            self.table.setRowCount(0)
+        self.materials_changed.emit(course)
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -233,15 +260,15 @@ class StudyPlannerPanel(QWidget):
         layout.addLayout(form)
         self._form = form
 
-        self.attach_button = QPushButton("Attach files...")
+        self.attach_button = QPushButton("Upload material...")
         self.attach_button.clicked.connect(self._on_attach_clicked)
         layout.addWidget(self.attach_button)
         self.material_label = QLabel("No files selected")
         self.material_label.setWordWrap(True)
         layout.addWidget(self.material_label)
-        self.clear_material_button = QPushButton("Clear attached files")
+        self.clear_material_button = QPushButton("Organise course material...")
         self.clear_material_button.setEnabled(False)
-        self.clear_material_button.clicked.connect(self._on_clear_material_clicked)
+        self.clear_material_button.clicked.connect(self._on_manage_material_clicked)
         layout.addWidget(self.clear_material_button)
 
         self.generate_button = QPushButton("Generate Plan")
@@ -266,26 +293,41 @@ class StudyPlannerPanel(QWidget):
         self.commit_button.setEnabled(False)
         self.commit_button.clicked.connect(self._on_commit_clicked)
         results_layout.addWidget(self.commit_button)
+        self.chapter_spin.valueChanged.connect(self._save_draft)
+        self.daily_minutes_spin.valueChanged.connect(self._save_draft)
+        self.description_edit.editingFinished.connect(self._save_draft)
 
     # ---- loading the exam picker ----
 
+    def _start_worker(self, worker, on_done):
+        self._worker = worker
+        # A result signal can start the next operation before run() returns.
+        # Keep every thread alive until Qt confirms it has actually finished.
+        self._active_workers.add(worker)
+        worker.done.connect(on_done)
+        worker.failed.connect(self._on_failed)
+        worker.finished.connect(lambda: self._active_workers.discard(worker))
+        worker.start()
+
     def _reload_exams(self):
+        if self._busy:
+            return
         self.status_label.setText("Checking schedule table...")
         self._set_busy(True)
-        self._worker = ListExamsWorker(self.planner)
-        self._worker.done.connect(self._on_exams_loaded)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.start()
+        self._start_worker(ListExamsWorker(self.planner), self._on_exams_loaded)
 
     def _on_exams_loaded(self, exams):
         self._set_busy(False)
         self.exams = exams
-        self.course_combo.clear()
         seen = []
         for e in exams:
             if e["course"] not in seen:
                 seen.append(e["course"])
-        self.course_combo.addItems(seen)
+        # Populate first, then handle the final selection exactly once. The
+        # intermediate signals otherwise regenerate a remembered plan twice.
+        with QSignalBlocker(self.course_combo):
+            self.course_combo.clear()
+            self.course_combo.addItems(seen)
         if not seen:
             self.status_label.setText(
                 "No courses with a real exam date found yet -- fill in some dates on the "
@@ -297,13 +339,20 @@ class StudyPlannerPanel(QWidget):
 
     def _on_course_changed(self):
         course = self.course_combo.currentText()
-        self.field_combo.clear()
-        self.field_combo.addItems([e["field"] for e in self.exams if e["course"] == course])
+        with QSignalBlocker(self.field_combo):
+            self.field_combo.clear()
+            self.field_combo.addItems([e["field"] for e in self.exams if e["course"] == course])
+        self._on_field_changed()
 
     def _on_field_changed(self):
+        self._save_draft()
+        self.current_plan = None
+        self.commit_button.setEnabled(False)
+        self.table.setRowCount(0)
         course = self.course_combo.currentText()
         field = self.field_combo.currentText()
         if not course or not field:
+            self._selected_deadline = None
             return
 
         is_work_type = field in WORK_FIELD_LABELS
@@ -311,11 +360,20 @@ class StudyPlannerPanel(QWidget):
         self._form.setRowVisible(self.description_edit, is_work_type)
 
         stored = self._load_stored_config(course, field)
+        self._restoring_config = True
         self.chapter_spin.setValue(stored.get("chapter_count", 1) if stored else 1)
         self.description_edit.setText(stored.get("description", "") if stored else "")
         self.daily_minutes_spin.setValue(stored.get("daily_minutes", 100) if stored else 100)
         self.material_paths = _stored_material_paths(stored) if stored else []
+        try:
+            paths, missing = self.material_library.resolve(course, self.material_paths)
+            self.material_paths = paths + [path for path in self.material_paths if Path(path).name in missing]
+        except (MaterialError, OSError) as error:
+            self.status_label.setText(str(error))
+        self._selected_deadline = (course, field)
+        self._restoring_config = False
         self._update_material_label()
+        self._save_draft()
 
         if not stored:
             return
@@ -337,6 +395,7 @@ class StudyPlannerPanel(QWidget):
         self.status_label.setText(f"Something went wrong: {message}")
 
     def _set_busy(self, busy):
+        self._busy = busy
         self.course_combo.setEnabled(not busy)
         self.field_combo.setEnabled(not busy)
         self.chapter_spin.setEnabled(not busy)
@@ -356,7 +415,26 @@ class StudyPlannerPanel(QWidget):
         )
         if not paths:
             return
-        self.material_paths = paths
+        course = self.course_combo.currentText()
+        if not course:
+            self.status_label.setText("Choose a course before uploading material.")
+            return
+        try:
+            self.material_library.import_files(course, paths)
+        except (MaterialError, OSError) as error:
+            self.status_label.setText(str(error))
+            return
+        self.on_library_changed(course)
+        self.status_label.setText(f"Material saved for {course}. You can upload another course's files now.")
+
+    def _on_manage_material_clicked(self):
+        from material_library_dialog import MaterialLibraryDialog
+        dialog = MaterialLibraryDialog(
+            courses=[exam["course"] for exam in self.exams],
+            current_course=self.course_combo.currentText(), library=self.material_library, parent=self,
+        )
+        dialog.materials_changed.connect(self.on_library_changed)
+        dialog.exec()
         self._update_material_label()
 
     def _on_clear_material_clicked(self):
@@ -372,10 +450,15 @@ class StudyPlannerPanel(QWidget):
             names = ", ".join(Path(p).name for p in self.material_paths)
             self.material_label.setText(f"{len(self.material_paths)} files: {names}")
         self.clear_material_button.setEnabled(bool(self.material_paths))
+        missing = [Path(path).name for path in self.material_paths if not Path(path).is_file()]
+        if missing:
+            self.material_label.setText(self.material_label.text() + "\nUpload these missing files again: " + ", ".join(missing))
 
     # ---- generating the plan ----
 
     def _on_generate_clicked(self):
+        if self._busy:
+            return
         course = self.course_combo.currentText()
         field = self.field_combo.currentText()
         if not course or not field:
@@ -387,15 +470,13 @@ class StudyPlannerPanel(QWidget):
         self.table.setRowCount(0)
         self.commit_button.setEnabled(False)
         self._set_busy(True)
-        self._worker = GeneratePlanWorker(
+        worker = GeneratePlanWorker(
             self.planner, course, field,
             chapter_count=None if is_work_type else self.chapter_spin.value(),
             description=self.description_edit.text() if is_work_type else None,
             material_paths=self.material_paths, daily_minutes=self.daily_minutes_spin.value(),
         )
-        self._worker.done.connect(self._on_plan_generated)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.start()
+        self._start_worker(worker, self._on_plan_generated)
 
     def _on_plan_generated(self, plan):
         self._set_busy(False)
@@ -422,16 +503,15 @@ class StudyPlannerPanel(QWidget):
     # ---- committing the plan ----
 
     def _on_commit_clicked(self):
-        if not self.current_plan or not self.current_plan["sessions"]:
+        if self._busy or not self.current_plan or not self.current_plan["sessions"]:
             return
         self.status_label.setText("Adding to calendar...")
         self._set_busy(True)
-        self._worker = CommitPlanWorker(self.planner, self.current_plan["sessions"])
-        self._worker.done.connect(self._on_committed)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.start()
+        worker = CommitPlanWorker(self.planner, self.current_plan["sessions"])
+        self._start_worker(worker, self._on_committed)
 
     def _on_committed(self, count):
         self._set_busy(False)
         self.status_label.setText(f"Added {count} session(s) to the calendar.")
         self.commit_button.setEnabled(False)
+        self.plan_committed.emit()

@@ -144,7 +144,8 @@ def _match_label_to_deadline(label, exams):
     else:
         return None
     for exam in sorted(exams, key=lambda e: -len(f"{e['course']} {e['field']}")):
-        if rest.startswith(f"{exam['course']} {exam['field']}"):
+        prefix = f"{exam['course']} {exam['field']}"
+        if rest == prefix or rest.startswith(prefix + " "):
             return exam
     return None
 
@@ -320,10 +321,9 @@ class StudyPlanner:
         """Returns [{"course", "field", "date_text", "date"}, ...] -- the
         known deadline (see list_exams()) each committed calendar entry for
         TODAY belongs to, matched via _match_label_to_deadline(). Used for
-        "what should I be working on right now" lookups (e.g. Monitor
-        Lockdown picking today's material) -- returns one entry per
-        distinct course/field, even if that plan wrote several sessions for
-        the same day (shouldn't normally happen, but not assumed)."""
+        "what should I be working on right now" lookups. Separate chapters
+        and start times stay selectable; exact title/date duplicates are
+        represented once."""
         today = today or date.today()
         exams = self.list_exams(today=today)
         entries = self.notion_client.list_calendar_entries(self.calendar_database_id)
@@ -337,10 +337,19 @@ class StudyPlanner:
             if d != today:
                 continue
             match = _match_label_to_deadline(entry.get("title") or "", exams)
-            if match is not None and (match["course"], match["field"]) not in seen:
-                seen.add((match["course"], match["field"]))
-                matches.append(match)
-        return matches
+            label = entry.get("title") or ""
+            key = (label, entry["date"])
+            if match is not None and key not in seen:
+                seen.add(key)
+                chapter_match = re.search(r"\bchap\s+(\d+)(?:\s*(?:&|-)\s*(\d+))?\s*$", label)
+                matches.append({
+                    **match, "label": label, "session_date": today,
+                    "calendar_entry_id": entry.get("id"), "calendar_date": entry["date"],
+                    "chapter_range": [int(chapter_match[1]), int(chapter_match[2] or chapter_match[1])]
+                    if chapter_match else None,
+                })
+        return sorted(matches, key=lambda item: (item["field"] in WORK_FIELD_LABELS,
+                                                item["date"], item["course"], item["field"]))
 
     def generate_plan(self, course, field, chapter_count=None, description=None, material_paths=None,
                        daily_minutes=100, today=None):
@@ -510,7 +519,7 @@ class StudyPlanner:
             return True
         return False
 
-    def mark_session_completed(self, course, field, on_date):
+    def mark_session_completed(self, course, field, on_date, entry_id=None):
         """Archives (Notion's own recoverable delete -- see notion_
         client.delete_calendar_entry()) the committed calendar entry for
         course/field that's on on_date -- called when Monitor Lockdown
@@ -525,12 +534,14 @@ class StudyPlanner:
         as roll_over_incomplete_day(); returns True if an entry was
         actually found and archived, False if nothing matched (not an
         error -- e.g. it was never committed to begin with)."""
-        prefix = f"{STUDY_LABEL_PREFIX}{course} {field}"
+        prefixes = (f"{STUDY_LABEL_PREFIX}{course} {field}", f"{WORK_LABEL_PREFIX}{course} {field}")
         entries = self.notion_client.list_calendar_entries(self.calendar_database_id)
         for entry in entries:
+            if entry_id is not None and entry.get("id") != entry_id:
+                continue
             if entry["date"][:10] != on_date.isoformat():
                 continue
-            if not entry["title"].startswith(prefix):
+            if not any(entry["title"] == prefix or entry["title"].startswith(prefix + " ") for prefix in prefixes):
                 continue
             self.notion_client.delete_calendar_entry(entry["id"])
             return True

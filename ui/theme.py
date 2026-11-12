@@ -539,6 +539,7 @@ class HeaderBanner(QWidget):
 
     settings_requested = pyqtSignal()
     games_requested = pyqtSignal()
+    materials_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -575,6 +576,11 @@ class HeaderBanner(QWidget):
         self.games_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.games_button.clicked.connect(self.games_requested.emit)
         outer.addWidget(self.games_button)
+
+        self.materials_button = QPushButton("Upload material...")
+        self.materials_button.setToolTip("Save slides and notes separately for each course")
+        self.materials_button.clicked.connect(self.materials_requested.emit)
+        outer.addWidget(self.materials_button)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
